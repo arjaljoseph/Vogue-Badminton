@@ -5,15 +5,34 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<meta name="apple-mobile-web-app-title" content="Vogue Badminton Buddies">
+<meta name="apple-mobile-web-app-title" content="VBB">
+<meta name="mobile-web-app-capable" content="yes">
 <meta name="theme-color" content="#0f172a">
 <link rel="manifest" href="manifest.json">
 <link rel="apple-touch-icon" href="icon-192.png">
 <title>Vogue Badminton Buddies</title>
-<style>*{margin:0;padding:0;box-sizing:border-box}body{font-family:'Segoe UI',system-ui,-apple-system,sans-serif;background:#fff;-webkit-tap-highlight-color:transparent;-webkit-touch-callout:none;overscroll-behavior:none}</style>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+html,body{height:100%;width:100%;overflow-x:hidden}
+body{font-family:'Segoe UI',system-ui,-apple-system,sans-serif;background:#fff;-webkit-tap-highlight-color:transparent;-webkit-touch-callout:none;overscroll-behavior:none}
+#root{min-height:100vh;min-height:100dvh}
+@media(max-width:480px){
+  body{font-size:14px}
+  select,input{font-size:16px!important}
+}
+@media(min-width:1024px){
+  body{background:#f1f5f9}
+  #root>div{background:#fff;border-radius:16px;margin-top:12px;padding-bottom:24px;box-shadow:0 2px 20px rgba(0,0,0,0.08)}
+}
+#fs-btn{position:fixed;bottom:16px;right:16px;z-index:9999;width:44px;height:44px;border-radius:12px;border:none;background:rgba(15,23,42,0.85);color:#facc15;font-size:20px;cursor:pointer;display:flex;align-items:center;justify-content:center;backdrop-filter:blur(8px);box-shadow:0 2px 12px rgba(0,0,0,0.3);transition:transform 0.15s}
+#fs-btn:hover{transform:scale(1.1)}
+@media(display-mode:standalone){#fs-btn{display:none!important}}
+@media(display-mode:fullscreen){#fs-btn{display:none!important}}
+</style>
 </head>
 <body>
 <div id="root"></div>
+<button id="fs-btn" onclick="toggleFullscreen()" title="Toggle fullscreen">⛶</button>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.9/babel.min.js"></script>
@@ -213,11 +232,11 @@ function CourtScoreboard({game,teams,dispatch,courtName}) {
         <div style={{width:5,background:leading===pairTeam?"#facc15":"transparent",flexShrink:0,borderRadius:"0 3px 3px 0",boxShadow:leading===pairTeam?"0 0 12px rgba(250,204,21,0.5)":"none"}}/>
         <div style={{flex:1,display:"flex",flexDirection:"column",padding:"10px 14px",gap:6,minWidth:0,justifyContent:"center"}}>
           <div style={{fontSize:9,fontWeight:800,color:accentLight,textTransform:"uppercase",letterSpacing:"0.12em"}}>{teamName}</div>
-          {pair.map(id=>{const p=getP(team,id);return <div key={id} style={{display:"flex",alignItems:"center",gap:8}}><span style={{fontSize:18,fontWeight:900,color:"#fff",textTransform:"uppercase",letterSpacing:"0.05em",textShadow:"0 2px 4px rgba(0,0,0,0.5)"}}>{p?.name||"?"}</span>{p?.gender&&<span style={{fontSize:10,color:"rgba(255,255,255,0.35)"}}>{p.gender==="Male"?"♂":"♀"}</span>}</div>;})}
+          {pair.map(id=>{const p=getP(team,id);return <div key={id} style={{display:"flex",alignItems:"center",gap:8}}><span style={{fontSize:"clamp(14px,3.5vw,18px)",fontWeight:900,color:"#fff",textTransform:"uppercase",letterSpacing:"0.05em",textShadow:"0 2px 4px rgba(0,0,0,0.5)"}}>{p?.name||"?"}</span>{p?.gender&&<span style={{fontSize:10,color:"rgba(255,255,255,0.35)"}}>{p.gender==="Male"?"♂":"♀"}</span>}</div>;})}
         </div>
         <div style={{display:"flex",alignItems:"center",gap:4,padding:"8px 6px",flexShrink:0}}>
           {!isSet1&&<div style={{width:40,height:40,display:"flex",alignItems:"center",justifyContent:"center",fontSize:18,fontWeight:900,borderRadius:8,background:wonS1?"rgba(22,163,74,0.9)":"rgba(255,255,255,0.08)",color:wonS1?"#fff":"rgba(255,255,255,0.3)",fontVariantNumeric:"tabular-nums"}}>{pairTeam===1?game.set1.s1:game.set1.s2}</div>}
-          <input type="text" inputMode="numeric" value={currentScore} onChange={e=>handleManual(pairTeam,e.target.value)} onFocus={e=>e.target.select()} style={{width:56,height:56,fontSize:30,fontWeight:900,textAlign:"center",background:"rgba(0,0,0,0.3)",border:"2px solid rgba(250,204,21,0.7)",borderRadius:12,color:"#facc15",outline:"none",padding:0,fontVariantNumeric:"tabular-nums",boxShadow:"0 0 16px rgba(250,204,21,0.15)"}}/>
+          <input type="text" inputMode="numeric" value={currentScore} onChange={e=>handleManual(pairTeam,e.target.value)} onFocus={e=>e.target.select()} style={{width:"clamp(44px,12vw,56px)",height:"clamp(44px,12vw,56px)",fontSize:"clamp(22px,6vw,30px)",fontWeight:900,textAlign:"center",background:"rgba(0,0,0,0.3)",border:"2px solid rgba(250,204,21,0.7)",borderRadius:12,color:"#facc15",outline:"none",padding:0,fontVariantNumeric:"tabular-nums",boxShadow:"0 0 16px rgba(250,204,21,0.15)"}}/>
         </div>
         <div style={{display:"flex",flexDirection:"column",justifyContent:"center",gap:3,padding:"4px 8px 4px 2px",flexShrink:0}}>
           <button onClick={()=>dispatch({type:"TAP_SCORE",gameId:game.id,team:pairTeam})} style={{width:32,height:26,borderRadius:6,border:"none",background:"rgba(255,255,255,0.15)",color:"#fff",fontWeight:900,fontSize:16,cursor:"pointer"}}>+</button>
@@ -385,7 +404,7 @@ function PlayersTab({teams,dispatch,liveGames}) {
 
 const Card=({children,style,...r})=><div style={{background:"#fff",borderRadius:16,border:"1px solid #e2e8f0",padding:"20px 24px",...style}} {...r}>{children}</div>;
 
-const TABS=[{key:"match",label:"Match",icon:"🏸"},{key:"queue",label:"Queue",icon:"📋"},{key:"players",label:"Players",icon:"✏️"},{key:"teams",label:"Teams",icon:"👥"},{key:"standings",label:"Standings",icon:"🏆"}];
+const TABS=[{key:"match",label:"Match",icon:"🏸"},{key:"queue",label:"Queue",icon:"📋"},{key:"players",label:"Players",icon:"✏️"},{key:"teams",label:"Teams",icon:"👥"},{key:"standings",label:"Stats",icon:"🏆"}];
 
 function BadmintonApp() {
   const [st,dispatch]=useReducer(reducer,init);
@@ -400,16 +419,16 @@ function BadmintonApp() {
   const t2P=mg.reduce((s,g)=>s+(g.team1Id===t2?.id?g.totalPts1:g.totalPts2),0);
 
   return (
-    <div style={{fontFamily:"'Segoe UI',system-ui,-apple-system,sans-serif",maxWidth:940,margin:"0 auto",padding:"0 8px 40px"}}>
-      <div style={{padding:"12px 0 4px",display:"flex",alignItems:"center",gap:10,flexWrap:"wrap"}}>
-        <div style={{fontSize:20,fontWeight:800,color:"#1e293b"}}>🏸 Vogue Badminton Buddies</div>
+    <div style={{fontFamily:"'Segoe UI',system-ui,-apple-system,sans-serif",maxWidth:960,margin:"0 auto",padding:"0 6px 40px"}}>
+      <div style={{padding:"10px 0 6px",display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}}>
+        <div style={{fontSize:"clamp(16px,4vw,20px)",fontWeight:800,color:"#1e293b",whiteSpace:"nowrap"}}>🏸 VBB</div>
         <div style={{flex:1}}/>
-        <select value={st.matchType} onChange={e=>dispatch({type:"SET_MATCH_TYPE",matchType:e.target.value})} style={{padding:"6px 10px",borderRadius:8,border:"1.5px solid #e2e8f0",fontSize:12,fontWeight:600,background:"#f8fafc"}}>
+        <select value={st.matchType} onChange={e=>dispatch({type:"SET_MATCH_TYPE",matchType:e.target.value})} style={{padding:"5px 8px",borderRadius:8,border:"1.5px solid #e2e8f0",fontSize:11,fontWeight:600,background:"#f8fafc"}}>
           {MATCH_TYPES.map(m=><option key={m}>{m}</option>)}
         </select>
       </div>
-      <div style={{display:"flex",gap:2,borderBottom:"2px solid #f1f5f9",marginBottom:12,overflowX:"auto"}}>
-        {TABS.map(t=><button key={t.key} onClick={()=>setTab(t.key)} style={{padding:"8px 14px",border:"none",background:"none",cursor:"pointer",fontWeight:tab===t.key?700:500,fontSize:13,color:tab===t.key?"#2563eb":"#94a3b8",borderBottom:tab===t.key?"2.5px solid #2563eb":"2.5px solid transparent",whiteSpace:"nowrap"}}><span style={{marginRight:4}}>{t.icon}</span>{t.label}</button>)}
+      <div style={{display:"flex",gap:4,marginBottom:12,overflowX:"auto",padding:"2px 0"}}>
+        {TABS.map(t=><button key={t.key} onClick={()=>setTab(t.key)} style={{padding:"7px 12px",border:"none",borderRadius:99,cursor:"pointer",fontWeight:tab===t.key?700:600,fontSize:"clamp(11px,2.5vw,13px)",color:tab===t.key?"#fff":"#64748b",background:tab===t.key?"#2563eb":"#f1f5f9",whiteSpace:"nowrap",transition:"all 0.15s",boxShadow:tab===t.key?"0 2px 8px rgba(37,99,235,0.3)":"none",flexShrink:0}}><span style={{marginRight:3}}>{t.icon}</span>{t.label}</button>)}
       </div>
 
       {tab==="match"&&t1&&t2&&(
@@ -466,5 +485,26 @@ function BadmintonApp() {
 
 ReactDOM.createRoot(document.getElementById('root')).render(React.createElement(BadmintonApp));
 </script>
-<script>if('serviceWorker' in navigator){window.addEventListener('load',()=>{navigator.serviceWorker.register('sw.js').catch(()=>{});});}</script>
+<script>
+function toggleFullscreen(){
+  if(!document.fullscreenElement&&!document.webkitFullscreenElement){
+    var el=document.documentElement;
+    if(el.requestFullscreen)el.requestFullscreen();
+    else if(el.webkitRequestFullscreen)el.webkitRequestFullscreen();
+    else if(el.msRequestFullscreen)el.msRequestFullscreen();
+  }else{
+    if(document.exitFullscreen)document.exitFullscreen();
+    else if(document.webkitExitFullscreen)document.webkitExitFullscreen();
+  }
+}
+document.addEventListener('keydown',function(e){if(e.key==='F11'){e.preventDefault();toggleFullscreen();}});
+if('serviceWorker' in navigator){window.addEventListener('load',()=>{navigator.serviceWorker.register('sw.js').catch(()=>{});});}
+// Auto-enter fullscreen on PC if opened from bookmark
+if(window.matchMedia('(min-width:1024px)').matches && !window.navigator.standalone){
+  document.addEventListener('click',function enterFS(){
+    if(!document.fullscreenElement)toggleFullscreen();
+    document.removeEventListener('click',enterFS);
+  },{once:true});
+}
+</script>
 </body></html>
