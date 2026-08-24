@@ -79,6 +79,7 @@ button:active{transform:scale(0.96)}
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.9/babel.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 <script type="text/babel">
 const { useState, useEffect, useReducer } = React;
 
@@ -111,6 +112,132 @@ function pairKey(a, b) { return [a, b].sort().join("+"); }
 function pColor(name) { const PCOLS=["#3b82f6","#8b5cf6","#10b981","#f59e0b","#ef4444","#06b6d4","#d946ef","#6366f1","#f97316","#14b8a6","#ec4899","#84cc16"]; let h=0; for(let i=0;i<name.length;i++) h=name.charCodeAt(i)+((h<<5)-h); return PCOLS[Math.abs(h)%PCOLS.length]; }
 function defaultAvatar(name) { let h=0; for(let i=0;i<name.length;i++) h=name.charCodeAt(i)+((h<<5)-h); return Math.abs(h)%AVATARS.length; }
 function byName(a,b){return (a?.name||"").localeCompare((b?.name||""),undefined,{sensitivity:"base"});}
+function normalizeHeaderKey(value){return String(value||"").toLowerCase().replace(/[^a-z0-9]+/g,"");}
+function normalizeCellValue(value){return value===null||value===undefined?"":String(value).trim();}
+function normalizeSkillValue(value){
+  const raw=normalizeCellValue(value).toLowerCase();
+  if(!raw) return "Intermediate";
+  if(["1","b","beg","beginner"].includes(raw)) return "Beginner";
+  if(["2","i","int","intermediate"].includes(raw)) return "Intermediate";
+  if(["3","a","adv","advanced"].includes(raw)) return "Advanced";
+  if(["4","s","str","strong"].includes(raw)) return "Strong";
+  const match=SKILL_LEVELS.find(s=>s.toLowerCase()===raw);
+  return match||"Intermediate";
+}
+function normalizeGenderValue(value){
+  const raw=normalizeCellValue(value).toLowerCase();
+  if(["f","female","woman","girl"].includes(raw)) return "Female";
+  return "Male";
+}
+function normalizeAvatarValue(value,name){
+  const n=Number(value);
+  return Number.isFinite(n)&&n>=0&&n<AVATARS.length?Math.floor(n):defaultAvatar(name||"");
+}
+function downloadBlobFile(filename, blob){
+  const url=URL.createObjectURL(blob);
+  const link=document.createElement("a");
+  link.href=url;
+  link.download=filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  setTimeout(()=>URL.revokeObjectURL(url),1000);
+}
+function downloadTextFile(filename, content, mime="text/plain;charset=utf-8;", addBom=true){
+  const parts=addBom?[ "\ufeff", content ]:[ content ];
+  downloadBlobFile(filename,new Blob(parts,{type:mime}));
+}
+function parseDelimitedTextToRows(text){
+  const clean=String(text||"").replace(/^\uFEFF/,"");
+  const lines=clean.split(/\r?\n/).map(line=>line.trimEnd()).filter(line=>line.trim()!=="");
+  if(lines.length===0) return [];
+  const sample=lines.slice(0,5).join("\n");
+  const counts={"\t":(sample.match(/\t/g)||[]).length,",":(sample.match(/,/g)||[]).length,";":(sample.match(/;/g)||[]).length};
+  const delimiter=Object.entries(counts).sort((a,b)=>b[1]-a[1])[0][0];
+  const parseLine=line=>{
+    const cells=[];
+    let cur="";
+    let quoted=false;
+    for(let i=0;i<line.length;i++){
+      const ch=line[i];
+      if(ch==='"'){
+        if(quoted&&line[i+1]==='"'){cur+='"';i++;}
+        else quoted=!quoted;
+      }else if(ch===delimiter&&!quoted){
+        cells.push(cur);
+        cur="";
+      }else{
+        cur+=ch;
+      }
+    }
+    cells.push(cur);
+    return cells.map(cell=>cell.trim());
+  };
+  return lines.map(parseLine);
+}
+function normalizeImportedPlayerRow(row){
+  const byKey={};
+  if(Array.isArray(row)){row.forEach((value,idx)=>{byKey[idx]=value;});}
+  const obj=Array.isArray(row)?{name:row[0],skill:row[1],gender:row[2],gameLimit:row[3],avatar:row[4]}:row||{};
+  Object.entries(obj).forEach(([key,value])=>{byKey[normalizeHeaderKey(key)]=value;});
+  const name=normalizeCellValue(byKey.name??byKey.player??byKey.playername??byKey.fullname??byKey.nickname??byKey[0]);
+  if(!name) return null;
+  return {
+    name,
+    skill:normalizeSkillValue(byKey.skill??byKey.level??byKey.skilllevel??byKey.rank??byKey[1]),
+    gender:normalizeGenderValue(byKey.gender??byKey.sex??byKey[2]),
+    gameLimit:normalizeGameLimit(byKey.gamelimit??byKey.games??byKey.maxgames??byKey.limit??byKey.playlimit??byKey[3]),
+    avatar:normalizeAvatarValue(byKey.avatar??byKey.avatarindex??byKey.avatarid??byKey[4],name)
+  };
+}
+function normalizeImportedPlayerRows(rows){
+  const data=(rows||[]).filter(row=>Array.isArray(row)?row.some(cell=>normalizeCellValue(cell)!==""):Object.keys(row||{}).length>0);
+  if(data.length===0) return [];
+  const first=(data[0]||[]).map(normalizeCellValue);
+  const firstKeys=first.map(normalizeHeaderKey);
+  const hasHeader=firstKeys.some(k=>["name","player","playername","fullname","nickname","skill","level","gender","sex","gamelimit","games","maxgames","limit","avatar","avatarindex","avatarid"].includes(k));
+  const headers=hasHeader?first:[];
+  const sourceRows=hasHeader?data.slice(1):data;
+  return sourceRows.map(row=>{
+    if(hasHeader){
+      const mapped={};
+      headers.forEach((header,idx)=>{mapped[header]=row[idx];});
+      return normalizeImportedPlayerRow(mapped);
+    }
+    return normalizeImportedPlayerRow(row);
+  }).filter(Boolean);
+}
+async function parsePlayerImportFile(file){
+  const name=(file?.name||"").toLowerCase();
+  const isBinary=/\.(xlsx|xlsm|xlsb|xls)$/i.test(name);
+  const raw=isBinary?await file.arrayBuffer():await file.text();
+  if(isBinary){
+    if(typeof XLSX==="undefined") throw new Error("Spreadsheet import library is unavailable.");
+    const workbook=XLSX.read(raw,{type:"array"});
+    const sheet=workbook.Sheets[workbook.SheetNames[0]];
+    const rows=XLSX.utils.sheet_to_json(sheet,{header:1,defval:"",blankrows:false,raw:false});
+    return normalizeImportedPlayerRows(rows);
+  }
+  return normalizeImportedPlayerRows(parseDelimitedTextToRows(raw));
+}
+function exportPlayerTemplate(format){
+  if(typeof XLSX==="undefined") throw new Error("Spreadsheet export library is unavailable.");
+  const headers=["name","skill","gender","gameLimit","avatar"];
+  const ws=XLSX.utils.aoa_to_sheet([headers]);
+  const clean=(format||"csv").toLowerCase();
+  if(clean==="xlsx"){
+    const wb=XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb,ws,"Players");
+    XLSX.writeFile(wb,"player_list_template.xlsx");
+    return;
+  }
+  if(clean==="json"){
+    downloadTextFile("player_list_template.json",JSON.stringify([{name:"",skill:"",gender:"",gameLimit:"",avatar:""}],null,2),"application/json;charset=utf-8;",false);
+    return;
+  }
+  const text=`${headers.join(clean==="txt"?"\t":",")}\n`;
+  downloadTextFile(`player_list_template.${clean==="txt"?"txt":"csv"}`,text,clean==="txt"?"text/plain;charset=utf-8;":"text/csv;charset=utf-8;");
+}
 
 function getAllPairs(players) { const p=[]; for(let i=0;i<players.length;i++) for(let j=i+1;j<players.length;j++) p.push([players[i].id,players[j].id]); return p; }
 function makeLevelPairRow(teams){const playersByTeam={};(teams||[]).forEach(t=>{playersByTeam[t.id]="";});return {id:uid(),playersByTeam};}
@@ -133,19 +260,95 @@ function buildPlayMaps(pool, history, liveGames){
   (liveGames||[]).forEach((g,idx)=>{const order=(history||[]).length+idx+1;[...g.pair1,...g.pair2].forEach(id=>{if(pg[id]!==undefined){pg[id]++;last[id]=order;}});});
   return {pg,last};
 }
-function choosePartner(anchor, candidates, historySet, pg, last, excludeIds){
+function normalizeGameLimit(limit){
+  const n=Number(limit);
+  return Number.isFinite(n)&&n>0?Math.floor(n):null;
+}
+function resolveGameLimit(limit, fallback){
+  const explicit=normalizeGameLimit(limit);
+  return explicit!==null?explicit:normalizeGameLimit(fallback);
+}
+function buildPlayerGameCounts(pool, history, liveGames){
+  const counts={}, limits={};
+  (pool||[]).forEach(p=>{counts[p.id]=0;limits[p.id]=normalizeGameLimit(p?.gameLimit);});
+  const tally=g=>{[...(g?.pair1||[]),...(g?.pair2||[])].forEach(id=>{if(counts[id]!==undefined) counts[id]++;});};
+  (history||[]).forEach(tally);
+  (liveGames||[]).forEach(tally);
+  return {counts, limits};
+}
+function buildQueueMatchPlan(pool, history, liveGames, rowTypes, busyIds, gameCounts){
+  const allPlayers=pool||[];
+  const allPG={};
+  const allLast={};
+  const allUsed=new Set();
+  allPlayers.forEach(p=>{allPG[p.id]=0;allLast[p.id]=0;});
+  (history||[]).forEach((g,idx)=>{const order=idx+1;[...g.pair1,...g.pair2].forEach(id=>{if(allPG[id]!==undefined){allPG[id]++;allLast[id]=order;}});allUsed.add(pairKey(g.pair1[0],g.pair1[1]));allUsed.add(pairKey(g.pair2[0],g.pair2[1]));});
+  (liveGames||[]).forEach((g,idx)=>{const order=(history||[]).length+idx+1;[...g.pair1,...g.pair2].forEach(id=>{if(allPG[id]!==undefined){allPG[id]++;allLast[id]=order;}});});
+  const avail=allPlayers.filter(p=>!busyIds.has(p.id)&&!isPlayerAtLimit(p,gameCounts));
+  const maxMatches=Math.min(10,Math.floor(avail.length/4));
+  const usedInQueue=new Set();
+  const matchups=[];
+  for(let mi=0;mi<maxMatches;mi++){
+    const mt=(rowTypes&&rowTypes[mi])||"Mixed Doubles";
+    const remaining=avail.filter(p=>!usedInQueue.has(p.id));
+    if(remaining.length<4) break;
+    const rawPairs=getAllPairs(remaining);
+    const validPairs=mt?filterPairsByMatchType(rawPairs,remaining,mt):rawPairs;
+    const src=validPairs.length>0?validPairs:rawPairs;
+    const fresh=src.filter(([a,b])=>!allUsed.has(pairKey(a,b)));
+    const pool2=fresh.length>0?fresh:src;
+    const sorted=[...pool2].sort((x,y)=>{const mgx=Math.max(allPG[x[0]]||0,allPG[x[1]]||0),mgy=Math.max(allPG[y[0]]||0,allPG[y[1]]||0);if(mgx!==mgy) return mgx-mgy;const gx=(allPG[x[0]]||0)+(allPG[x[1]]||0),gy=(allPG[y[0]]||0)+(allPG[y[1]]||0);if(gx!==gy) return gx-gy;const lx=Math.max(allLast[x[0]]||0,allLast[x[1]]||0),ly=Math.max(allLast[y[0]]||0,allLast[y[1]]||0);return lx-ly;});
+    let pair1=sorted[0], pair2=sorted.find(([a,b])=>a!==pair1?.[0]&&a!==pair1?.[1]&&b!==pair1?.[0]&&b!==pair1?.[1]);
+    if(!pair1||!pair2){
+      const fallbackPairsRaw=getAllPairs(remaining);
+      const fallbackPairs=filterPairsByGenderOnly(fallbackPairsRaw,remaining,mt);
+      if(fallbackPairs.length<2) break;
+      pair1=fallbackPairs[0];
+      pair2=fallbackPairs.find(([a,b])=>a!==pair1[0]&&a!==pair1[1]&&b!==pair1[0]&&b!==pair1[1]);
+      if(!pair2) break;
+    }
+    const p1obj={ids:pair1,fresh:!allUsed.has(pairKey(pair1[0],pair1[1])),totalGames:(allPG[pair1[0]]||0)+(allPG[pair1[1]]||0),matchType:mt};
+    const p2obj={ids:pair2,fresh:!allUsed.has(pairKey(pair2[0],pair2[1])),totalGames:(allPG[pair2[0]]||0)+(allPG[pair2[1]]||0),matchType:mt};
+    matchups.push({p1:p1obj,p2:p2obj,matchType:getMatchType(
+      allPlayers.find(p=>p.id===pair1[0]),
+      allPlayers.find(p=>p.id===pair1[1]),
+      allPlayers.find(p=>p.id===pair2[0]),
+      allPlayers.find(p=>p.id===pair2[1])
+    ),rowType:mt});
+    pair1.forEach(id=>usedInQueue.add(id));
+    pair2.forEach(id=>usedInQueue.add(id));
+  }
+  const waitingPlayers=avail.filter(p=>!usedInQueue.has(p.id));
+  return {matchups, waitingPlayers, allPG, allLast, allUsed, avail};
+}
+function buildPlayerGroupMap(levelPairs, teams){
+  const map={};
+  (levelPairs||[]).forEach(row=>{
+    (teams||[]).forEach(t=>{
+      const pid=row?.playersByTeam?.[t.id];
+      if(pid) map[pid]=row.id;
+    });
+  });
+  return map;
+}
+function isPlayerAtLimit(player, gameCounts){
+  const limit=normalizeGameLimit(player?.gameLimit);
+  if(limit===null) return false;
+  return (gameCounts?.[player?.id]||0)>=limit;
+}
+function choosePartner(anchor, candidates, historySet, pg, last, excludeIds, groupMap, blockedGroupIds){
   if(!anchor) return null;
-  const src=(candidates||[]).filter(p=>p&&p.id!==anchor.id&&!excludeIds.has(p.id)&&isValidSkillPair(p.skill,anchor.skill));
+  const src=(candidates||[]).filter(p=>p&&p.id!==anchor.id&&!excludeIds.has(p.id)&&isValidSkillPair(p.skill,anchor.skill)&&!(blockedGroupIds||new Set()).has(groupMap?.[p.id]||""));
   if(src.length===0) return null;
   const fresh=src.filter(p=>!historySet.has(pairKey(anchor.id,p.id)));
   const pool=fresh.length>0?fresh:src;
   pool.sort((a,b)=>{const ga=pg[a.id]||0,gb=pg[b.id]||0;if(ga!==gb) return ga-gb;return (last[a.id]||0)-(last[b.id]||0);});
   return pool[0]||null;
 }
-function pickForcedAnchors(levelPairs, teams, poolById, busyIds){
+function pickForcedAnchors(levelPairs, teams, poolById, busyIds, gameCounts){
   const teamOrder=(teams||[]).map(t=>t.id);
   for(const row of (levelPairs||[])){
-    const picks=teamOrder.map(tid=>row?.playersByTeam?.[tid]).filter(Boolean).map(pid=>poolById[pid]).filter(Boolean).filter(p=>!busyIds.has(p.id));
+    const picks=teamOrder.map(tid=>row?.playersByTeam?.[tid]).filter(Boolean).map(pid=>poolById[pid]).filter(Boolean).filter(p=>!busyIds.has(p.id)&&!isPlayerAtLimit(p,gameCounts));
     if(picks.length<2) continue;
     for(let i=0;i<picks.length;i++){
       for(let j=i+1;j<picks.length;j++){
@@ -155,21 +358,23 @@ function pickForcedAnchors(levelPairs, teams, poolById, busyIds){
   }
   return null;
 }
-function buildForcedQueueMatch(levelPairs, teams, pool, history, liveGames, busyIds){
+function buildForcedQueueMatch(levelPairs, teams, pool, history, liveGames, busyIds, gameCounts){
   const poolById={}; (pool||[]).forEach(p=>{const owner=(teams||[]).find(t=>t.players.some(tp=>tp.id===p.id));poolById[p.id]={...p,teamId:owner?owner.id:""};});
-  const anchors=pickForcedAnchors(levelPairs,teams,poolById,busyIds);
+  const groupMap=buildPlayerGroupMap(levelPairs,teams);
+  const anchors=pickForcedAnchors(levelPairs,teams,poolById,busyIds,gameCounts);
   if(!anchors) return null;
   const [a,b]=anchors;
-  const avail=(pool||[]).filter(p=>!busyIds.has(p.id)&&p.id!==a.id&&p.id!==b.id);
+  const avail=(pool||[]).filter(p=>!busyIds.has(p.id)&&p.id!==a.id&&p.id!==b.id&&!isPlayerAtLimit(p,gameCounts));
   const {pg,last}=buildPlayMaps(pool,history,liveGames);
   const used=new Set();(history||[]).forEach(g=>{used.add(pairKey(g.pair1[0],g.pair1[1]));used.add(pairKey(g.pair2[0],g.pair2[1]));});
-  const pA=choosePartner(a,avail,used,pg,last,new Set([b.id]));
+  const blockedGroups=new Set([groupMap[a.id],groupMap[b.id]].filter(Boolean));
+  const pA=choosePartner(a,avail,used,pg,last,new Set([b.id]),groupMap,blockedGroups);
   if(!pA) return null;
-  const pB=choosePartner(b,avail,used,pg,last,new Set([a.id,pA.id]));
+  const pB=choosePartner(b,avail,used,pg,last,new Set([a.id,pA.id]),groupMap,blockedGroups);
   if(!pB) return null;
   return {pair1:[a.id,pA.id],pair2:[b.id,pB.id],matchType:getMatchType(a,pA,b,pB)};
 }
-function buildForcedTournamentMatch(levelPairs,t1,t2,history,livePairs){
+function buildForcedTournamentMatch(levelPairs,t1,t2,history,livePairs,gameCounts){
   if(!t1||!t2) return null;
   const busy1=new Set(),busy2=new Set();
   (livePairs||[]).forEach(({p1,p2})=>{(p1||[]).forEach(id=>busy1.add(id));(p2||[]).forEach(id=>busy2.add(id));});
@@ -177,13 +382,17 @@ function buildForcedTournamentMatch(levelPairs,t1,t2,history,livePairs){
   if(!row) return null;
   const a=t1.players.find(p=>p.id===row.playersByTeam[t1.id]);
   const b=t2.players.find(p=>p.id===row.playersByTeam[t2.id]);
-  if(!a||!b||a.skill!==b.skill||busy1.has(a.id)||busy2.has(b.id)) return null;
+  if(!a||!b||a.skill!==b.skill||busy1.has(a.id)||busy2.has(b.id)||isPlayerAtLimit(a,gameCounts)||isPlayerAtLimit(b,gameCounts)) return null;
+  const groupMap=buildPlayerGroupMap(levelPairs,[t1,t2]);
   const pool=[...t1.players,...t2.players];
   const {pg,last}=buildPlayMaps(pool,history,[]);
   const used1=new Set(),used2=new Set();
   (history||[]).forEach(g=>{if(g.team1Id===t1.id){used1.add(pairKey(g.pair1[0],g.pair1[1]));used2.add(pairKey(g.pair2[0],g.pair2[1]));}else if(g.team2Id===t1.id){used1.add(pairKey(g.pair2[0],g.pair2[1]));used2.add(pairKey(g.pair1[0],g.pair1[1]));}});
-  const pA=choosePartner(a,t1.players,used1,pg,last,new Set([...busy1,a.id]));
-  const pB=choosePartner(b,t2.players,used2,pg,last,new Set([...busy2,b.id]));
+  const eligible1=t1.players.filter(p=>!busy1.has(p.id)&&!isPlayerAtLimit(p,gameCounts));
+  const eligible2=t2.players.filter(p=>!busy2.has(p.id)&&!isPlayerAtLimit(p,gameCounts));
+  const blockedGroups=new Set([groupMap[a.id],groupMap[b.id]].filter(Boolean));
+  const pA=choosePartner(a,eligible1,used1,pg,last,new Set([...busy1,a.id]),groupMap,blockedGroups);
+  const pB=choosePartner(b,eligible2,used2,pg,last,new Set([...busy2,b.id]),groupMap,blockedGroups);
   if(!pA||!pB) return null;
   return {id:uid(),pair1:[a.id,pA.id],pair2:[b.id,pB.id],matchType:getMatchType(a,pA,b,pB)};
 }
@@ -227,26 +436,26 @@ function buildMaps(t1, t2, history) {
   return {t1Used,t2Used,t1PG,t2PG,t1Last,t2Last};
 }
 
-function pickPairForTeam(teamPlayers, usedKeys, busyIds, pgMap, lastMap, matchType) {
-  const avail = teamPlayers.filter(p => !busyIds.has(p.id));
-  const rawSrc = avail.length >= 2 ? getAllPairs(avail) : getAllPairs(teamPlayers);
-  const src = matchType ? filterPairsByMatchType(rawSrc, teamPlayers, matchType) : rawSrc;
-  if (src.length === 0) { const fallback = rawSrc.length > 0 ? rawSrc : getAllPairs(teamPlayers); return shuffle(fallback)[0] || null; }
+function pickPairForTeam(teamPlayers, usedKeys, busyIds, pgMap, lastMap, matchType, gameCounts) {
+  const eligible = (teamPlayers||[]).filter(p => !busyIds.has(p.id) && !isPlayerAtLimit(p, gameCounts));
+  const rawSrc = getAllPairs(eligible);
+  const src = matchType ? filterPairsByMatchType(rawSrc, eligible, matchType) : rawSrc;
+  if (src.length === 0) return null;
   const fresh = shuffle(src).filter(([a,b]) => !usedKeys.has(pairKey(a,b)));
   const pool = fresh.length > 0 ? fresh : shuffle(src);
   if (pool.length === 0) return null;
-  pool.sort((x,y) => { const mgx=Math.max(pgMap[x[0]]||0,pgMap[x[1]]||0),mgy=Math.max(pgMap[y[0]]||0,pgMap[y[1]]||0); if(mgx!==mgy) return mgx-mgy; const gx=(pgMap[x[0]]||0)+(pgMap[x[1]]||0),gy=(pgMap[y[0]]||0)+(pgMap[y[1]]||0); if(gx!==gy) return gx-gy; const lx=(lastMap[x[0]]||0)+(lastMap[x[1]]||0),ly=(lastMap[y[0]]||0)+(lastMap[y[1]]||0); if(lx!==ly) return lx-ly; const sx=SKILL_VAL[teamPlayers.find(p=>p.id===x[0])?.skill||"Intermediate"]+SKILL_VAL[teamPlayers.find(p=>p.id===x[1])?.skill||"Intermediate"],sy=SKILL_VAL[teamPlayers.find(p=>p.id===y[0])?.skill||"Intermediate"]+SKILL_VAL[teamPlayers.find(p=>p.id===y[1])?.skill||"Intermediate"];return Math.abs(sx-5)-Math.abs(sy-5); });
+  pool.sort((x,y) => { const mgx=Math.max(pgMap[x[0]]||0,pgMap[x[1]]||0),mgy=Math.max(pgMap[y[0]]||0,pgMap[y[1]]||0); if(mgx!==mgy) return mgx-mgy; const gx=(pgMap[x[0]]||0)+(pgMap[x[1]]||0),gy=(pgMap[y[0]]||0)+(pgMap[y[1]]||0); if(gx!==gy) return gx-gy; const lx=(lastMap[x[0]]||0)+(lastMap[x[1]]||0),ly=(lastMap[y[0]]||0)+(lastMap[y[1]]||0); if(lx!==ly) return lx-ly; const sx=SKILL_VAL[eligible.find(p=>p.id===x[0])?.skill||"Intermediate"]+SKILL_VAL[eligible.find(p=>p.id===x[1])?.skill||"Intermediate"],sy=SKILL_VAL[eligible.find(p=>p.id===y[0])?.skill||"Intermediate"]+SKILL_VAL[eligible.find(p=>p.id===y[1])?.skill||"Intermediate"];return Math.abs(sx-5)-Math.abs(sy-5); });
   return pool[0];
 }
 
-function autoNewGameForCourt(t1, t2, history, livePairs, matchType, wildcards, levelPairs) {
+function autoNewGameForCourt(t1, t2, history, livePairs, matchType, wildcards, levelPairs, gameCounts) {
   if(t1.players.length<2||t2.players.length<2) return null;
-  const forced=buildForcedTournamentMatch(levelPairs,t1,t2,history,livePairs);
+  const forced=buildForcedTournamentMatch(levelPairs,t1,t2,history,livePairs,gameCounts);
   if(forced) return forced;
   // Temporarily add available wildcards to the team with fewer total games
   const wc = wildcards || [];
   const busyAll=new Set(); livePairs.forEach(({p1,p2})=>{p1.forEach(id=>busyAll.add(id));p2.forEach(id=>busyAll.add(id));});
-  const availWC = wc.filter(p=>!busyAll.has(p.id));
+  const availWC = wc.filter(p=>!busyAll.has(p.id)&&!isPlayerAtLimit(p,gameCounts));
   const t1Games = history.filter(g=>g.team1Id===t1.id).reduce((s,g)=>s+g.pair1.length,0);
   const t2Games = history.filter(g=>g.team2Id===t2.id||g.team1Id===t2.id).reduce((s,g)=>s+(g.team1Id===t2.id?g.pair1.length:g.pair2.length),0);
   const t1Eff = {id:t1.id, players:[...t1.players,...(t1Games<=t2Games?availWC:[])]};
@@ -254,12 +463,12 @@ function autoNewGameForCourt(t1, t2, history, livePairs, matchType, wildcards, l
   const {t1Used,t2Used,t1PG,t2PG,t1Last,t2Last} = buildMaps(t1Eff,t2Eff,history);
   const busy1=new Set(),busy2=new Set();
   livePairs.forEach(({p1,p2})=>{p1.forEach(id=>busy1.add(id));p2.forEach(id=>busy2.add(id));});
-  const pair1 = pickPairForTeam(t1Eff.players,t1Used,busy1,t1PG,t1Last,matchType);
+  const pair1 = pickPairForTeam(t1Eff.players,t1Used,busy1,t1PG,t1Last,matchType,gameCounts);
   if(!pair1) return null;
   const p1a=t1Eff.players.find(p=>p.id===pair1[0]), p1b=t1Eff.players.find(p=>p.id===pair1[1]);
   const t1Skills = [p1a?.skill,p1b?.skill].sort();
   const t1Genders = [p1a?.gender,p1b?.gender].sort();
-  const avail2 = t2Eff.players.filter(p=>!busy2.has(p.id));
+  const avail2 = t2Eff.players.filter(p=>!busy2.has(p.id)&&!isPlayerAtLimit(p,gameCounts));
   const rawPairs2 = avail2.length>=2?getAllPairs(avail2):getAllPairs(t2Eff.players);
   let matched = rawPairs2.filter(([a,b])=>{const pa=t2Eff.players.find(p=>p.id===a),pb=t2Eff.players.find(p=>p.id===b);if(!pa||!pb) return false;const sk=[pa.skill,pb.skill].sort();const gn=[pa.gender,pb.gender].sort();return sk[0]===t1Skills[0]&&sk[1]===t1Skills[1]&&gn[0]===t1Genders[0]&&gn[1]===t1Genders[1];});
   if(matched.length===0) matched = rawPairs2.filter(([a,b])=>{const pa=t2Eff.players.find(p=>p.id===a),pb=t2Eff.players.find(p=>p.id===b);if(!pa||!pb) return false;const sk=[pa.skill,pb.skill].sort();return sk[0]===t1Skills[0]&&sk[1]===t1Skills[1];});
@@ -287,24 +496,17 @@ function autoGroupTeams(playerList, n) {
 function emptyTeams(n=2){const teams=[];for(let i=0;i<n;i++) teams.push({id:uid(),name:`Team ${String.fromCharCode(65+i)}`,players:[],wins:0,losses:0,draws:0,gamesPlayed:0});return teams;}
 function seedPlayersAsUncategorized(list){return (list||[]).map(p=>({id:uid(),name:p.name,skill:p.skill,gender:p.gender||"Male",avatar:p.avatar!==undefined?p.avatar:defaultAvatar(p.name)}));}
 
-const PLAYERS = [
-  {name:"Arjal",skill:"Advanced",gender:"Male"},{name:"Marivic",skill:"Intermediate",gender:"Female"},{name:"Umer",skill:"Intermediate",gender:"Male"},
-  {name:"Mohamad",skill:"Intermediate",gender:"Male"},{name:"Butchoy",skill:"Advanced",gender:"Male"},{name:"Edsel",skill:"Advanced",gender:"Male"},
-  {name:"Maria",skill:"Intermediate",gender:"Female"},{name:"Frank",skill:"Beginner",gender:"Male"},{name:"Nel",skill:"Intermediate",gender:"Male"},
-  {name:"Aizah",skill:"Beginner",gender:"Female"},{name:"Mernic",skill:"Beginner",gender:"Male"},{name:"Brian",skill:"Advanced",gender:"Male"},
-  {name:"Erwin MR",skill:"Intermediate",gender:"Male"},{name:"Ej",skill:"Beginner",gender:"Male"},{name:"Robbie",skill:"Intermediate",gender:"Male"},
-  {name:"Michelle",skill:"Intermediate",gender:"Female"},{name:"Erwin DC",skill:"Intermediate",gender:"Male"},{name:"RJ",skill:"Advanced",gender:"Male"},
-  {name:"Ronald",skill:"Advanced",gender:"Male"},{name:"Arlyn",skill:"Intermediate",gender:"Female"},{name:"Roxxy",skill:"Intermediate",gender:"Female"},
-  {name:"Elmer",skill:"Advanced",gender:"Male"},
-];
+const PLAYERS = [];
 
 const BASE_TEAMS = emptyTeams(2);
 const init = {
   teams: BASE_TEAMS,
-  wildcards: seedPlayersAsUncategorized(PLAYERS),
+  wildcards: [],
+  globalGameLimit: null,
   courts: [{id:"c1",name:"Court 1",status:"open",gameId:null},{id:"c2",name:"Court 2",status:"open",gameId:null}],
   liveGames:[], gameHistory:[], matchHistory:[], matchType:"Mixed Doubles", gameMode:"queue", manualQueue:[],
   levelPairs:[makeLevelPairRow(BASE_TEAMS)],
+  queueRowTypes:{},
   paymentStatus:{},
   paymentMethod:{},
 };
@@ -314,8 +516,31 @@ function reducer(st, a) {
   switch (a.type) {
     case "REGROUP": return st;
     case "ADD_PLAYER": {
-      const p={id:uid(),name:a.name,skill:a.skill,gender:a.gender||"Male",avatar:a.avatar!==undefined?a.avatar:defaultAvatar(a.name)};
+      const p={id:uid(),name:a.name,skill:a.skill,gender:a.gender||"Male",avatar:a.avatar!==undefined?a.avatar:defaultAvatar(a.name),gameLimit:resolveGameLimit(a.gameLimit,st.globalGameLimit)};
       return {...st, wildcards:[...st.wildcards, p], paymentStatus:{...st.paymentStatus,[p.id]:false}, paymentMethod:{...st.paymentMethod,[p.id]:"Cash"}, levelPairs:ensureLevelPairs(st.levelPairs,st.teams,[...st.teams.flatMap(t=>t.players),...st.wildcards,p])};
+    }
+    case "BULK_ADD_PLAYERS": {
+      const incoming=(a.players||[]).map(p=>({
+        id:uid(),
+        name:normalizeCellValue(p?.name),
+        skill:normalizeSkillValue(p?.skill),
+        gender:normalizeGenderValue(p?.gender),
+        avatar:normalizeAvatarValue(p?.avatar,p?.name),
+        gameLimit:resolveGameLimit(p?.gameLimit,st.globalGameLimit)
+      })).filter(p=>p.name);
+      if(incoming.length===0) return st;
+      const wildcards=[...st.wildcards,...incoming];
+      const paymentStatus={...st.paymentStatus};
+      const paymentMethod={...st.paymentMethod};
+      incoming.forEach(p=>{paymentStatus[p.id]=false;paymentMethod[p.id]="Cash";});
+      return {...st,wildcards,paymentStatus,paymentMethod,levelPairs:ensureLevelPairs(st.levelPairs,st.teams,[...st.teams.flatMap(t=>t.players),...wildcards])};
+    }
+    case "SET_GLOBAL_GAME_LIMIT": {
+      const limit=normalizeGameLimit(a.gameLimit);
+      const updatePlayer=p=>({...p,gameLimit:limit});
+      const teams=st.teams.map(t=>({...t,players:t.players.map(updatePlayer)}));
+      const wildcards=st.wildcards.map(updatePlayer);
+      return {...st,globalGameLimit:limit,teams,wildcards};
     }
     case "REMOVE_PLAYER": {
       if(st.wildcards.some(p=>p.id===a.id)) {const wildcards=st.wildcards.filter(p=>p.id!==a.id);const paymentStatus={...st.paymentStatus};const paymentMethod={...st.paymentMethod};delete paymentStatus[a.id];delete paymentMethod[a.id];return {...st, wildcards, paymentStatus, paymentMethod, levelPairs:ensureLevelPairs(st.levelPairs,st.teams,[...st.teams.flatMap(t=>t.players),...wildcards])};}
@@ -323,7 +548,7 @@ function reducer(st, a) {
       const paymentStatus={...st.paymentStatus};const paymentMethod={...st.paymentMethod};delete paymentStatus[a.id];delete paymentMethod[a.id];
       return {...st,teams,paymentStatus,paymentMethod,levelPairs:ensureLevelPairs(st.levelPairs,teams,[...teams.flatMap(t=>t.players),...st.wildcards])};
     }
-    case "UPDATE_PLAYER": {const teams=st.teams.map(t=>({...t,players:t.players.map(p=>p.id===a.id?{...p,...a.updates}:p)}));const wildcards=st.wildcards.map(p=>p.id===a.id?{...p,...a.updates}:p);return {...st,teams,wildcards,levelPairs:ensureLevelPairs(st.levelPairs,teams,[...teams.flatMap(t=>t.players),...wildcards])};}
+    case "UPDATE_PLAYER": {const update={...a.updates}; if(Object.prototype.hasOwnProperty.call(update,"gameLimit")) update.gameLimit=normalizeGameLimit(update.gameLimit); const teams=st.teams.map(t=>({...t,players:t.players.map(p=>p.id===a.id?{...p,...update}:p)}));const wildcards=st.wildcards.map(p=>p.id===a.id?{...p,...update}:p);return {...st,teams,wildcards,levelPairs:ensureLevelPairs(st.levelPairs,teams,[...teams.flatMap(t=>t.players),...wildcards])};}
     case "WILDCARD_TO_TEAM": {
       const wc=st.wildcards.find(p=>p.id===a.playerId); if(!wc) return st;
       const wildcards=st.wildcards.filter(p=>p.id!==a.playerId); const teams=st.teams.map(t=>t.id===a.toTeamId?{...t,players:[...t.players,wc]}:t);
@@ -372,10 +597,29 @@ function reducer(st, a) {
       if (st.liveGames.length > 0) return st;
       return {...st, gameMode:a.mode};
     }
+    case "SET_QUEUE_ROW_TYPE": {
+      const index=Number(a.index);
+      if(!Number.isInteger(index) || index<0) return st;
+      const next={...(st.queueRowTypes||{})};
+      if(a.matchType){next[index]=a.matchType;}else{delete next[index];}
+      return {...st, queueRowTypes:next};
+    }
     case "ADD_MANUAL_MATCH": return {...st, manualQueue:[...st.manualQueue,{id:uid(),pair1:a.pair1,pair2:a.pair2,matchType:a.matchType||"Mixed Doubles"}]};
     case "REMOVE_MANUAL_MATCH": return {...st, manualQueue:st.manualQueue.filter(m=>m.id!==a.id)};
     case "MOVE_MANUAL_MATCH": {const idx=st.manualQueue.findIndex(m=>m.id===a.id);if(idx<0) return st;const nq=[...st.manualQueue];if(a.dir==="up"&&idx>0){[nq[idx-1],nq[idx]]=[nq[idx],nq[idx-1]];}else if(a.dir==="down"&&idx<nq.length-1){[nq[idx+1],nq[idx]]=[nq[idx],nq[idx+1]];}return {...st,manualQueue:nq};}
-    case "START_MANUAL_MATCH": {const mm=st.manualQueue.find(m=>m.id===a.matchId);if(!mm) return st;const cc=st.courts.find(c=>c.id===a.courtId);if(!cc||cc.status!=="open") return st;const tt1=st.teams[0],tt2=st.teams[1];const lg={id:uid(),mode:st.gameMode,pair1:mm.pair1,pair2:mm.pair2,matchType:mm.matchType,courtId:a.courtId,team1Id:tt1?tt1.id:"q1",team2Id:tt2?tt2.id:"q2",startedAt:Date.now(),currentSet:1,set1:{s1:0,s2:0},set2:{s1:0,s2:0}};return {...st,manualQueue:st.manualQueue.filter(m=>m.id!==a.matchId),courts:st.courts.map(c=>c.id===a.courtId?{...c,status:"playing",gameId:lg.id}:c),liveGames:[...st.liveGames,lg]};}
+    case "START_MANUAL_MATCH": {
+      const mm=st.manualQueue.find(m=>m.id===a.matchId);if(!mm) return st;
+      const cc=st.courts.find(c=>c.id===a.courtId);if(!cc||cc.status!=="open") return st;
+      const tt1=st.teams[0],tt2=st.teams[1];
+      const pool=[...st.teams.flatMap(t=>t.players),...(st.wildcards||[])];
+      const pById={}; pool.forEach(p=>{pById[p.id]=p;});
+      const counts=buildPlayerGameCounts(pool,st.gameHistory,st.liveGames).counts;
+      const busy=new Set(); st.liveGames.forEach(g=>{[...g.pair1,...g.pair2].forEach(id=>busy.add(id));});
+      const ids=[...mm.pair1,...mm.pair2];
+      if(ids.some(id=>busy.has(id)||!pById[id]||isPlayerAtLimit(pById[id],counts))) return st;
+      const lg={id:uid(),mode:st.gameMode,pair1:mm.pair1,pair2:mm.pair2,matchType:mm.matchType,courtId:a.courtId,team1Id:tt1?tt1.id:"q1",team2Id:tt2?tt2.id:"q2",startedAt:Date.now(),currentSet:1,set1:{s1:0,s2:0},set2:{s1:0,s2:0}};
+      return {...st,manualQueue:st.manualQueue.filter(m=>m.id!==a.matchId),courts:st.courts.map(c=>c.id===a.courtId?{...c,status:"playing",gameId:lg.id}:c),liveGames:[...st.liveGames,lg]};
+    }
     case "ADD_TEAM": {const teams=[...st.teams,{id:uid(),name:a.name||`Team ${String.fromCharCode(65+st.teams.length)}`,players:[],wins:0,losses:0,draws:0,gamesPlayed:0}];return {...st, teams, levelPairs:ensureLevelPairs(st.levelPairs,teams,[...teams.flatMap(t=>t.players),...st.wildcards])};}
     case "ADD_LEVEL_PAIR_ROW":
     case "ADD_LEVEL_PAIR_COLUMN":
@@ -456,34 +700,21 @@ function reducer(st, a) {
       const t1=st.teams[0],t2=st.teams[1];
       if(st.gameMode==="queue"){
         const pool=[...st.teams.flatMap(t=>t.players),...st.wildcards];
+        const counts=buildPlayerGameCounts(pool,st.gameHistory,st.liveGames).counts;
         const busyQ=new Set();st.liveGames.forEach(g=>{[...g.pair1,...g.pair2].forEach(id=>busyQ.add(id));});
-        const avail=pool.filter(p=>!busyQ.has(p.id));
-        if(avail.length<4) return st;
-        const forced=buildForcedQueueMatch(st.levelPairs,st.teams,pool,st.gameHistory,st.liveGames,busyQ);
-        if(forced){
-          const lg={id:uid(),mode:st.gameMode,pair1:forced.pair1,pair2:forced.pair2,matchType:forced.matchType,courtId,team1Id:t1?t1.id:"q1",team2Id:t2?t2.id:"q2",startedAt:Date.now(),currentSet:1,set1:{s1:0,s2:0},set2:{s1:0,s2:0}};
+        const plan=buildQueueMatchPlan(pool,st.gameHistory,st.liveGames,st.queueRowTypes||{},busyQ,counts);
+        if(plan.matchups.length===0) return st;
+        const nextMatch=plan.matchups[0];
+        if(nextMatch){
+          const lg={id:uid(),mode:st.gameMode,pair1:nextMatch.p1.ids,pair2:nextMatch.p2.ids,matchType:nextMatch.matchType,courtId,team1Id:t1?t1.id:"q1",team2Id:t2?t2.id:"q2",startedAt:Date.now(),currentSet:1,set1:{s1:0,s2:0},set2:{s1:0,s2:0}};
           return {...st,courts:st.courts.map(c=>c.id===courtId?{...c,status:"playing",gameId:lg.id}:c),liveGames:[...st.liveGames,lg]};
         }
-        const usedKeys=new Set();st.gameHistory.forEach(g=>{usedKeys.add(pairKey(g.pair1[0],g.pair1[1]));usedKeys.add(pairKey(g.pair2[0],g.pair2[1]));});
-        const pgQ={};pool.forEach(p=>{pgQ[p.id]=0;});const lastQ={};pool.forEach(p=>{lastQ[p.id]=0;});
-        st.gameHistory.forEach((g,idx)=>{const order=idx+1;[...g.pair1,...g.pair2].forEach(id=>{if(pgQ[id]!==undefined){pgQ[id]++;lastQ[id]=order;}});});
-        st.liveGames.forEach((g,idx)=>{const order=st.gameHistory.length+idx+1;[...g.pair1,...g.pair2].forEach(id=>{if(pgQ[id]!==undefined){pgQ[id]++;lastQ[id]=order;}});});
-        const pairs=getAllPairs(avail);
-        const fresh=pairs.filter(([a,b])=>!usedKeys.has(pairKey(a,b)));
-        const src=fresh.length>0?fresh:pairs;
-        src.sort((x,y)=>{const mgx=Math.max(pgQ[x[0]]||0,pgQ[x[1]]||0),mgy=Math.max(pgQ[y[0]]||0,pgQ[y[1]]||0);if(mgx!==mgy) return mgx-mgy;const gx=(pgQ[x[0]]||0)+(pgQ[x[1]]||0),gy=(pgQ[y[0]]||0)+(pgQ[y[1]]||0);if(gx!==gy) return gx-gy;return (lastQ[x[0]]||0)+(lastQ[x[1]]||0)-(lastQ[y[0]]||0)-(lastQ[y[1]]||0);});
-        if(src.length<2) return st;
-        const p1=src[0];
-        const p2=src.find(([a,b])=>a!==p1[0]&&a!==p1[1]&&b!==p1[0]&&b!==p1[1]);
-        if(!p2) return st;
-        const pa=avail.find(p=>p.id===p1[0]),pb=avail.find(p=>p.id===p1[1]),pc=avail.find(p=>p.id===p2[0]),pd=avail.find(p=>p.id===p2[1]);
-        const mt=getMatchType(pa,pb,pc,pd);
-        const lg={id:uid(),mode:st.gameMode,pair1:p1,pair2:p2,matchType:mt,courtId,team1Id:t1?t1.id:"q1",team2Id:t2?t2.id:"q2",startedAt:Date.now(),currentSet:1,set1:{s1:0,s2:0},set2:{s1:0,s2:0}};
-        return {...st,courts:st.courts.map(c=>c.id===courtId?{...c,status:"playing",gameId:lg.id}:c),liveGames:[...st.liveGames,lg]};
+        return st;
       }
       if(!t1||!t2) return st;
       const livePairs=st.liveGames.map(g=>({p1:g.pair1,p2:g.pair2}));
-      const ng=autoNewGameForCourt(t1,t2,st.gameHistory,livePairs,st.matchType,st.wildcards,st.levelPairs); if(!ng) return st;
+      const counts=buildPlayerGameCounts([...st.teams.flatMap(t=>t.players),...(st.wildcards||[])],st.gameHistory,st.liveGames).counts;
+      const ng=autoNewGameForCourt(t1,t2,st.gameHistory,livePairs,st.matchType,st.wildcards,st.levelPairs,counts); if(!ng) return st;
       const lg={...ng,mode:st.gameMode,courtId,team1Id:t1.id,team2Id:t2.id,startedAt:Date.now(),currentSet:1,set1:{s1:0,s2:0},set2:{s1:0,s2:0}};
       return {...st,courts:st.courts.map(c=>c.id===courtId?{...c,status:"playing",gameId:lg.id}:c),liveGames:[...st.liveGames,lg]};
     }
@@ -496,7 +727,8 @@ function reducer(st, a) {
       if(allIds.some(id=>busy.has(id))) return st;
       const pool=[...st.teams.flatMap(t=>t.players),...st.wildcards];
       const pById={}; pool.forEach(p=>{pById[p.id]=p;});
-      if(allIds.some(id=>!pById[id])) return st;
+      const counts=buildPlayerGameCounts(pool,st.gameHistory,st.liveGames).counts;
+      if(allIds.some(id=>!pById[id]||isPlayerAtLimit(pById[id],counts))) return st;
       const t1=st.teams[0],t2=st.teams[1];
       const p1a=pById[pair1[0]],p1b=pById[pair1[1]],p2a=pById[pair2[0]],p2b=pById[pair2[1]];
       const mt=getMatchType(p1a,p1b,p2a,p2b);
@@ -526,27 +758,18 @@ function reducer(st, a) {
       const t1=st.teams[0],t2=st.teams[1]; const livePairs=remaining.map(g=>({p1:g.pair1,p2:g.pair2}));
       if(modeForGame==="queue"){
         const pool=[...st.teams.flatMap(t=>t.players),...st.wildcards];
+        const counts=buildPlayerGameCounts(pool,newHist,remaining).counts;
         const busyQ=new Set();remaining.forEach(g=>{[...g.pair1,...g.pair2].forEach(id=>busyQ.add(id));});
-        const avail=pool.filter(p=>!busyQ.has(p.id));
-        if(avail.length>=4){
-          const forced=buildForcedQueueMatch(st.levelPairs,st.teams,pool,newHist,remaining,busyQ);
-          if(forced){
-            const ng={id:uid(),mode:"queue",pair1:forced.pair1,pair2:forced.pair2,matchType:forced.matchType,courtId:game.courtId,team1Id:t1?t1.id:"q1",team2Id:t2?t2.id:"q2",startedAt:Date.now(),currentSet:1,set1:{s1:0,s2:0},set2:{s1:0,s2:0}};
-            return {...st,liveGames:[...remaining,ng],gameHistory:newHist};
-          }
-          const usedKeys=new Set();newHist.forEach(g=>{usedKeys.add(pairKey(g.pair1[0],g.pair1[1]));usedKeys.add(pairKey(g.pair2[0],g.pair2[1]));});
-          const pgF={};pool.forEach(p=>{pgF[p.id]=0;});const lastF={};pool.forEach(p=>{lastF[p.id]=0;});
-          newHist.forEach((g,idx)=>{const order=idx+1;[...g.pair1,...g.pair2].forEach(id=>{if(pgF[id]!==undefined){pgF[id]++;lastF[id]=order;}});});
-          remaining.forEach((g,idx)=>{const order=newHist.length+idx+1;[...g.pair1,...g.pair2].forEach(id=>{if(pgF[id]!==undefined){pgF[id]++;lastF[id]=order;}});});
-          const pairs=getAllPairs(avail);const fresh=pairs.filter(([a,b])=>!usedKeys.has(pairKey(a,b)));const src=fresh.length>0?fresh:pairs;
-          src.sort((x,y)=>{const mgx=Math.max(pgF[x[0]]||0,pgF[x[1]]||0),mgy=Math.max(pgF[y[0]]||0,pgF[y[1]]||0);if(mgx!==mgy) return mgx-mgy;const gx=(pgF[x[0]]||0)+(pgF[x[1]]||0),gy=(pgF[y[0]]||0)+(pgF[y[1]]||0);if(gx!==gy) return gx-gy;return (lastF[x[0]]||0)+(lastF[x[1]]||0)-(lastF[y[0]]||0)-(lastF[y[1]]||0);});
-          if(src.length>=2){const p1=src[0];const p2=src.find(([a,b])=>a!==p1[0]&&a!==p1[1]&&b!==p1[0]&&b!==p1[1]);
-            if(p2){const pa=avail.find(p=>p.id===p1[0]),pb=avail.find(p=>p.id===p1[1]),pc=avail.find(p=>p.id===p2[0]),pd=avail.find(p=>p.id===p2[1]);const mt=getMatchType(pa,pb,pc,pd);
-              const ng={id:uid(),mode:"queue",pair1:p1,pair2:p2,matchType:mt,courtId:game.courtId,team1Id:t1?t1.id:"q1",team2Id:t2?t2.id:"q2",startedAt:Date.now(),currentSet:1,set1:{s1:0,s2:0},set2:{s1:0,s2:0}};
-              return {...st,liveGames:[...remaining,ng],gameHistory:newHist};}}}
+        const plan=buildQueueMatchPlan(pool,newHist,remaining,st.queueRowTypes||{},busyQ,counts);
+        const nextMatch=plan.matchups[0];
+        if(nextMatch){
+          const ng={id:uid(),mode:"queue",pair1:nextMatch.p1.ids,pair2:nextMatch.p2.ids,matchType:nextMatch.matchType,courtId:game.courtId,team1Id:t1?t1.id:"q1",team2Id:t2?t2.id:"q2",startedAt:Date.now(),currentSet:1,set1:{s1:0,s2:0},set2:{s1:0,s2:0}};
+          return {...st,liveGames:[...remaining,ng],gameHistory:newHist};
+        }
         return {...st,courts:st.courts.map(c=>c.id===game.courtId?{...c,status:"open",gameId:null}:c),liveGames:remaining,gameHistory:newHist};
       }
-      const nextGame=autoNewGameForCourt(t1,t2,newHist,livePairs,st.matchType,st.wildcards,st.levelPairs);
+      const counts=buildPlayerGameCounts([...st.teams.flatMap(t=>t.players),...(st.wildcards||[])],newHist,remaining).counts;
+      const nextGame=autoNewGameForCourt(t1,t2,newHist,livePairs,st.matchType,st.wildcards,st.levelPairs,counts);
       if(nextGame){const ng={...nextGame,mode:"tournament",courtId:game.courtId,team1Id:t1.id,team2Id:t2.id,startedAt:Date.now(),currentSet:1,set1:{s1:0,s2:0},set2:{s1:0,s2:0}};return {...st,liveGames:[...remaining,ng],gameHistory:newHist};}
       return {...st,courts:st.courts.map(c=>c.id===game.courtId?{...c,status:"open",gameId:null}:c),liveGames:remaining,gameHistory:newHist};
     }
@@ -616,94 +839,36 @@ function CourtScoreboard({game,teams,dispatch,courtName,wildcards}) {
     </div>);
 }
 
-function PairQueue({teams,gameHistory,liveGames,dispatch,courts,gameMode,wildcards}) {
+function PairQueue({teams,gameHistory,liveGames,dispatch,courts,gameMode,wildcards,playerGameStats,queueRowTypes}) {
   const t1=teams[0],t2=teams[1];
   const isQueue=gameMode==="queue";
   const [editRow,setEditRow]=useState(null);
-  const [rowTypes,setRowTypes]=useState({});
   const [selT1a,setSelT1a]=useState("");const [selT1b,setSelT1b]=useState("");
   const [selT2a,setSelT2a]=useState("");const [selT2b,setSelT2b]=useState("");
   const allPlayers=isQueue?[...teams.flatMap(t=>t.players),...(wildcards||[])]:((t1&&t2)?t1.players:[]);
-  const allPG={};const allLast={};const allUsed=new Set();
+  const gameCounts=playerGameStats?.counts||{};
   const t1Used=new Set(),t2Used=new Set(),t1PG={},t2PG={},t1Last={},t2Last={};
   if(!isQueue&&t1&&t2){const maps=buildMaps(t1,t2,gameHistory);Object.assign(t1PG,maps.t1PG);Object.assign(t2PG,maps.t2PG);Object.assign(t1Last,maps.t1Last);Object.assign(t2Last,maps.t2Last);maps.t1Used.forEach(k=>t1Used.add(k));maps.t2Used.forEach(k=>t2Used.add(k));}
-  if(isQueue){
-    const gh=gameHistory||[];
-    allPlayers.forEach(p=>{allPG[p.id]=0;allLast[p.id]=0;});
-    gh.forEach((g,idx)=>{const order=idx+1;[...g.pair1,...g.pair2].forEach(id=>{if(allPG[id]!==undefined){allPG[id]++;allLast[id]=order;}});allUsed.add(pairKey(g.pair1[0],g.pair1[1]));allUsed.add(pairKey(g.pair2[0],g.pair2[1]));});
-    (liveGames||[]).forEach((g,idx)=>{const order=gh.length+idx+1;[...g.pair1,...g.pair2].forEach(id=>{if(allPG[id]!==undefined){allPG[id]++;allLast[id]=order;}});});
-  }
   const busyIds=new Set(); liveGames.forEach(g=>{[...g.pair1,...g.pair2].forEach(id=>busyIds.add(id));});
   const getP=(team,id)=>{if(isQueue) return allPlayers.find(p=>p.id===id);return team?.players.find(p=>p.id===id);};
+  const isAtLimit=id=>isPlayerAtLimit(allPlayers.find(p=>p.id===id)||getP(t1,id)||getP(t2,id),gameCounts);
   if(!isQueue&&(!t1||!t2)) return <div style={{textAlign:"center",padding:20,color:"rgba(255,255,255,0.4)",fontSize:12}}>Need at least 2 teams for Tournament mode.</div>;
-  const getRowType=(i)=>rowTypes[i]||"Mixed Doubles";
-  const setRowType=(i,mt)=>setRowTypes({...rowTypes,[i]:mt});
+  const getRowType=(i)=>queueRowTypes?.[i]||"Mixed Doubles";
+  const setRowType=(i,mt)=>dispatch({type:"SET_QUEUE_ROW_TYPE",index:i,matchType:mt});
   const openCourt=courts?.find(c=>c.status==="open");
-
-  const makeQueuePairs=(mt)=>{
-    const avail=allPlayers.filter(p=>!busyIds.has(p.id));
-    const rawPairs=getAllPairs(avail);
-    const validPairs=mt?filterPairsByMatchType(rawPairs,avail,mt):rawPairs;
-    const src=validPairs.length>0?validPairs:rawPairs;
-    const fresh=src.filter(([a,b])=>!allUsed.has(pairKey(a,b)));
-    const pool=fresh.length>0?fresh:src;
-    return [...pool].sort((x,y)=>{const mgx=Math.max(allPG[x[0]]||0,allPG[x[1]]||0),mgy=Math.max(allPG[y[0]]||0,allPG[y[1]]||0);if(mgx!==mgy) return mgx-mgy;const gx=(allPG[x[0]]||0)+(allPG[x[1]]||0),gy=(allPG[y[0]]||0)+(allPG[y[1]]||0);if(gx!==gy) return gx-gy;const lx=Math.max(allLast[x[0]]||0,allLast[x[1]]||0),ly=Math.max(allLast[y[0]]||0,allLast[y[1]]||0);return lx-ly;}).map(([a,b])=>({ids:[a,b],fresh:!allUsed.has(pairKey(a,b)),totalGames:(allPG[a]||0)+(allPG[b]||0)}));
-  };
+  const plan=isQueue?buildQueueMatchPlan(allPlayers,gameHistory,liveGames,queueRowTypes||{},busyIds,gameCounts):null;
+  const allPG=isQueue?plan.allPG:{};
+  const allLast=isQueue?plan.allLast:{};
+  const allUsed=isQueue?plan.allUsed:new Set();
+  const matchups=isQueue?plan.matchups:[];
+  const waitingPlayers=isQueue?plan.waitingPlayers:[];
 
   const PlayerTag=({id})=>{const p=allPlayers.find(pp=>pp.id===id)||getP(t1,id)||getP(t2,id);const g=allPG[id]||t1PG[id]||t2PG[id]||0;return <div style={{display:"flex",alignItems:"center",gap:4}}><div><div style={{fontSize:12,fontWeight:900,color:"#ffffff",textTransform:"uppercase",letterSpacing:"0.03em",textShadow:"0 1px 2px rgba(0,0,0,0.5)"}}>{p?.name||"?"}<span style={{fontSize:9,color:"rgba(255,255,255,0.5)",marginLeft:4}}>{p?.gender==="Male"?"\u2642":"\u2640"}</span></div><div style={{fontSize:10,color:"rgba(255,255,255,0.55)",fontWeight:600}}>({g} games)</div></div></div>;};
 
   const MTBtn=({row,mt,label})=>{const active=getRowType(row)===mt;const c=mt==="Mens Doubles"?"60,130,255":mt==="Womens Doubles"?"236,72,153":"168,85,247";return <button onClick={e=>{e.stopPropagation();setRowType(row,mt);}} style={{padding:"3px 8px",borderRadius:99,border:active?"1px solid rgba("+c+",0.5)":"1px solid rgba(255,255,255,0.06)",background:active?"rgba("+c+",0.15)":"transparent",color:"#ffffff",fontSize:9,fontWeight:700,cursor:"pointer"}}>{label}</button>;};
 
   if(isQueue){
-    const avail=allPlayers.filter(p=>!busyIds.has(p.id));
-    const maxMatches=Math.min(10,Math.floor(avail.length/4));
-    const usedInQueue=new Set();
-    const matchups=[];
-    for(let mi=0;mi<maxMatches;mi++){
-      const mt=getRowType(mi);
-      const remaining=avail.filter(p=>!usedInQueue.has(p.id));
-      if(remaining.length<4) break;
-      const rawPairs=getAllPairs(remaining);
-      const validPairs=mt?filterPairsByMatchType(rawPairs,remaining,mt):rawPairs;
-      const src=validPairs.length>0?validPairs:rawPairs;
-      const fresh=src.filter(([a,b])=>!allUsed.has(pairKey(a,b)));
-      const pool=fresh.length>0?fresh:src;
-      const sorted=[...pool].sort((x,y)=>{const mgx=Math.max(allPG[x[0]]||0,allPG[x[1]]||0),mgy=Math.max(allPG[y[0]]||0,allPG[y[1]]||0);if(mgx!==mgy) return mgx-mgy;const gx=(allPG[x[0]]||0)+(allPG[x[1]]||0),gy=(allPG[y[0]]||0)+(allPG[y[1]]||0);if(gx!==gy) return gx-gy;const lx=Math.max(allLast[x[0]]||0,allLast[x[1]]||0),ly=Math.max(allLast[y[0]]||0,allLast[y[1]]||0);return lx-ly;});
-      if(sorted.length<2){
-        const fallbackPairsRaw=getAllPairs(remaining);
-        const fallbackPairs=filterPairsByGenderOnly(fallbackPairsRaw,remaining,mt);
-        if(fallbackPairs.length<2) break;
-        const fp1=fallbackPairs[0];
-        const fp2=fallbackPairs.find(([a,b])=>a!==fp1[0]&&a!==fp1[1]&&b!==fp1[0]&&b!==fp1[1]);
-        if(!fp2) break;
-        const p1obj={ids:fp1,fresh:!allUsed.has(pairKey(fp1[0],fp1[1])),totalGames:(allPG[fp1[0]]||0)+(allPG[fp1[1]]||0)};
-        const p2obj={ids:fp2,fresh:!allUsed.has(pairKey(fp2[0],fp2[1])),totalGames:(allPG[fp2[0]]||0)+(allPG[fp2[1]]||0)};
-        matchups.push({p1:p1obj,p2:p2obj});
-        fp1.forEach(id=>usedInQueue.add(id));fp2.forEach(id=>usedInQueue.add(id));
-        continue;
-      }
-      const pair1=sorted[0];
-      const pair2=sorted.find(([a,b])=>a!==pair1[0]&&a!==pair1[1]&&b!==pair1[0]&&b!==pair1[1]);
-      if(!pair2){
-        const fallbackPairsRaw=getAllPairs(remaining);
-        const fallbackPairs=filterPairsByGenderOnly(fallbackPairsRaw,remaining,mt);
-        if(fallbackPairs.length<2) break;
-        const fp1=fallbackPairs[0];
-        const fp2=fallbackPairs.find(([a,b])=>a!==fp1[0]&&a!==fp1[1]&&b!==fp1[0]&&b!==fp1[1]);
-        if(!fp2) break;
-        const p1obj={ids:fp1,fresh:!allUsed.has(pairKey(fp1[0],fp1[1])),totalGames:(allPG[fp1[0]]||0)+(allPG[fp1[1]]||0)};
-        const p2obj={ids:fp2,fresh:!allUsed.has(pairKey(fp2[0],fp2[1])),totalGames:(allPG[fp2[0]]||0)+(allPG[fp2[1]]||0)};
-        matchups.push({p1:p1obj,p2:p2obj});
-        fp1.forEach(id=>usedInQueue.add(id));fp2.forEach(id=>usedInQueue.add(id));
-        continue;
-      }
-      const p1obj={ids:pair1,fresh:!allUsed.has(pairKey(pair1[0],pair1[1])),totalGames:(allPG[pair1[0]]||0)+(allPG[pair1[1]]||0)};
-      const p2obj={ids:pair2,fresh:!allUsed.has(pairKey(pair2[0],pair2[1])),totalGames:(allPG[pair2[0]]||0)+(allPG[pair2[1]]||0)};
-      matchups.push({p1:p1obj,p2:p2obj});
-      pair1.forEach(id=>usedInQueue.add(id));pair2.forEach(id=>usedInQueue.add(id));
-    }
     if(allPlayers.length<4) return <div style={{textAlign:"center",padding:20,color:"rgba(255,255,255,0.4)",fontSize:12}}>Need at least 4 players for queue mode.</div>;
-    const waitingPlayers=avail.filter(p=>!usedInQueue.has(p.id));
     return (
       <div style={{display:"flex",flexDirection:"column",gap:10}}>
         {liveGames.map((g,gi)=>{const matchNum=gameHistory.length+gi+1;return (
@@ -716,7 +881,7 @@ function PairQueue({teams,gameHistory,liveGames,dispatch,courts,gameMode,wildcar
             </div>
           </div>);})}
         {matchups.length===0&&<div style={{textAlign:"center",padding:20,color:"rgba(255,255,255,0.4)",fontSize:12}}>No more unique matchups available.</div>}
-        {matchups.map((m,i)=>{const matchNum=gameHistory.length+liveGames.length+i+1;
+        {matchups.map((m,i)=>{const matchNum=gameHistory.length+liveGames.length+i+1;const rowHasLimit=[...m.p1.ids,...m.p2.ids].some(id=>isAtLimit(id));
           if(editRow===i) return (
             <div key={i} style={{borderRadius:12,border:"1px solid rgba(0,210,255,0.3)",background:"rgba(0,210,255,0.04)",padding:"12px 14px",backdropFilter:"blur(8px)"}}>
               <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:8}}>
@@ -731,19 +896,20 @@ function PairQueue({teams,gameHistory,liveGames,dispatch,courts,gameMode,wildcar
                 <MTBtn row={i} mt="Mixed Doubles" label="MxD"/>
               </div>
               <div style={{display:"flex",gap:6,flexWrap:"wrap",alignItems:"center"}}>
-                <select value={selT1a} onChange={e=>setSelT1a(e.target.value)} style={{padding:"6px 8px",borderRadius:8,border:"1px solid rgba(0,210,255,0.2)",fontSize:12,background:"rgba(8,8,20,0.95)",color:"#fff",flex:1,minWidth:80}}><option value="">Pair 1 #1</option>{allPlayers.filter(p=>!busyIds.has(p.id)&&p.id!==selT1b&&p.id!==selT2a&&p.id!==selT2b).sort(byName).map(p=><option key={p.id} value={p.id}>{p.name} ({allPG[p.id]||0}G)</option>)}</select>
-                <select value={selT1b} onChange={e=>setSelT1b(e.target.value)} style={{padding:"6px 8px",borderRadius:8,border:"1px solid rgba(0,210,255,0.2)",fontSize:12,background:"rgba(8,8,20,0.95)",color:"#fff",flex:1,minWidth:80}}><option value="">Pair 1 #2</option>{allPlayers.filter(p=>!busyIds.has(p.id)&&p.id!==selT1a&&p.id!==selT2a&&p.id!==selT2b).sort(byName).map(p=><option key={p.id} value={p.id}>{p.name} ({allPG[p.id]||0}G)</option>)}</select>
+                <select value={selT1a} onChange={e=>setSelT1a(e.target.value)} style={{padding:"6px 8px",borderRadius:8,border:"1px solid rgba(0,210,255,0.2)",fontSize:12,background:"rgba(8,8,20,0.95)",color:"#fff",flex:1,minWidth:80}}><option value="">Pair 1 #1</option>{allPlayers.filter(p=>p.id===selT1a||(!busyIds.has(p.id)&&!isAtLimit(p.id)&&p.id!==selT1b&&p.id!==selT2a&&p.id!==selT2b)).sort(byName).map(p=><option key={p.id} value={p.id}>{p.name} ({allPG[p.id]||0}G)</option>)}</select>
+                <select value={selT1b} onChange={e=>setSelT1b(e.target.value)} style={{padding:"6px 8px",borderRadius:8,border:"1px solid rgba(0,210,255,0.2)",fontSize:12,background:"rgba(8,8,20,0.95)",color:"#fff",flex:1,minWidth:80}}><option value="">Pair 1 #2</option>{allPlayers.filter(p=>p.id===selT1b||(!busyIds.has(p.id)&&!isAtLimit(p.id)&&p.id!==selT1a&&p.id!==selT2a&&p.id!==selT2b)).sort(byName).map(p=><option key={p.id} value={p.id}>{p.name} ({allPG[p.id]||0}G)</option>)}</select>
                 <span style={{fontSize:12,fontWeight:900,color:"rgba(255,255,255,0.3)"}}>VS</span>
-                <select value={selT2a} onChange={e=>setSelT2a(e.target.value)} style={{padding:"6px 8px",borderRadius:8,border:"1px solid rgba(0,210,255,0.2)",fontSize:12,background:"rgba(8,8,20,0.95)",color:"#fff",flex:1,minWidth:80}}><option value="">Pair 2 #1</option>{allPlayers.filter(p=>!busyIds.has(p.id)&&p.id!==selT1a&&p.id!==selT1b&&p.id!==selT2b).sort(byName).map(p=><option key={p.id} value={p.id}>{p.name} ({allPG[p.id]||0}G)</option>)}</select>
-                <select value={selT2b} onChange={e=>setSelT2b(e.target.value)} style={{padding:"6px 8px",borderRadius:8,border:"1px solid rgba(0,210,255,0.2)",fontSize:12,background:"rgba(8,8,20,0.95)",color:"#fff",flex:1,minWidth:80}}><option value="">Pair 2 #2</option>{allPlayers.filter(p=>!busyIds.has(p.id)&&p.id!==selT1a&&p.id!==selT1b&&p.id!==selT2a).sort(byName).map(p=><option key={p.id} value={p.id}>{p.name} ({allPG[p.id]||0}G)</option>)}</select>
+                <select value={selT2a} onChange={e=>setSelT2a(e.target.value)} style={{padding:"6px 8px",borderRadius:8,border:"1px solid rgba(0,210,255,0.2)",fontSize:12,background:"rgba(8,8,20,0.95)",color:"#fff",flex:1,minWidth:80}}><option value="">Pair 2 #1</option>{allPlayers.filter(p=>p.id===selT2a||(!busyIds.has(p.id)&&!isAtLimit(p.id)&&p.id!==selT1a&&p.id!==selT1b&&p.id!==selT2b)).sort(byName).map(p=><option key={p.id} value={p.id}>{p.name} ({allPG[p.id]||0}G)</option>)}</select>
+                <select value={selT2b} onChange={e=>setSelT2b(e.target.value)} style={{padding:"6px 8px",borderRadius:8,border:"1px solid rgba(0,210,255,0.2)",fontSize:12,background:"rgba(8,8,20,0.95)",color:"#fff",flex:1,minWidth:80}}><option value="">Pair 2 #2</option>{allPlayers.filter(p=>p.id===selT2b||(!busyIds.has(p.id)&&!isAtLimit(p.id)&&p.id!==selT1a&&p.id!==selT1b&&p.id!==selT2a)).sort(byName).map(p=><option key={p.id} value={p.id}>{p.name} ({allPG[p.id]||0}G)</option>)}</select>
               </div>
-              {selT1a&&selT1b&&selT2a&&selT2b&&openCourt&&<button onClick={()=>{dispatch({type:"START_COURT_WITH_PAIR",courtId:openCourt.id,pair1:[selT1a,selT1b],pair2:[selT2a,selT2b]});setEditRow(null);}} style={{width:"100%",marginTop:10,padding:"10px 0",borderRadius:10,border:"1px solid rgba(0,255,140,0.3)",background:"rgba(0,255,140,0.12)",color:"#ffffff",fontWeight:700,fontSize:13,cursor:"pointer"}}>Start on {openCourt.name}</button>}
+              {selT1a&&selT1b&&selT2a&&selT2b&&openCourt&&!([selT1a,selT1b,selT2a,selT2b].some(id=>isAtLimit(id)))&&<button onClick={()=>{dispatch({type:"START_COURT_WITH_PAIR",courtId:openCourt.id,pair1:[selT1a,selT1b],pair2:[selT2a,selT2b]});setEditRow(null);}} style={{width:"100%",marginTop:10,padding:"10px 0",borderRadius:10,border:"1px solid rgba(0,255,140,0.3)",background:"rgba(0,255,140,0.12)",color:"#ffffff",fontWeight:700,fontSize:13,cursor:"pointer"}}>Start on {openCourt.name}</button>}
+              {([selT1a,selT1b,selT2a,selT2b].some(id=>id&&isAtLimit(id)))&&<div style={{marginTop:8,fontSize:11,color:"#f87171",fontWeight:700}}>One or more selected players reached their game limit.</div>}
             </div>);
           return (
           <div key={i} onClick={()=>{setEditRow(i);setSelT1a(m.p1.ids[0]);setSelT1b(m.p1.ids[1]);setSelT2a(m.p2.ids[0]);setSelT2b(m.p2.ids[1]);}}
             style={{borderRadius:12,overflow:"hidden",border:"1px solid rgba(0,210,255,0.1)",background:"rgba(12,12,30,0.88)",cursor:"pointer",animation:`wcFloat${i%3} 3.5s ease-in-out infinite`,animationDelay:`${i*0.2}s`}}>
             <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"5px 12px",background:"rgba(20,20,45,0.95)",borderBottom:"1px solid rgba(255,255,255,0.04)"}}>
-              <div style={{display:"flex",alignItems:"center",gap:6}}><span style={{fontSize:11,fontWeight:800,color:"#ffffff"}}>MATCH {matchNum}</span>{openCourt&&<button onClick={e=>{e.stopPropagation();dispatch({type:"START_COURT_WITH_PAIR",courtId:openCourt.id,pair1:m.p1.ids,pair2:m.p2.ids});}} style={{padding:"2px 8px",borderRadius:6,border:"1px solid rgba(0,255,140,0.3)",background:"rgba(0,255,140,0.12)",color:"#ffffff",fontSize:9,fontWeight:700,cursor:"pointer"}}>{openCourt.name}</button>}</div>
+              <div style={{display:"flex",alignItems:"center",gap:6}}><span style={{fontSize:11,fontWeight:800,color:"#ffffff"}}>MATCH {matchNum}</span>{openCourt&&!rowHasLimit&&<button onClick={e=>{e.stopPropagation();dispatch({type:"START_COURT_WITH_PAIR",courtId:openCourt.id,pair1:m.p1.ids,pair2:m.p2.ids});}} style={{padding:"2px 8px",borderRadius:6,border:"1px solid rgba(0,255,140,0.3)",background:"rgba(0,255,140,0.12)",color:"#ffffff",fontSize:9,fontWeight:700,cursor:"pointer"}}>{openCourt.name}</button>}</div>
                <div style={{display:"flex",gap:3}}><MTBtn row={i} mt="Mens Doubles" label="MD"/><MTBtn row={i} mt="Womens Doubles" label="WD"/><MTBtn row={i} mt="Mixed Doubles" label="MxD"/></div>
               <span style={{fontSize:10,color:"rgba(255,255,255,0.4)"}}>Tap to edit</span>
             </div>
@@ -770,9 +936,9 @@ function PairQueue({teams,gameHistory,liveGames,dispatch,courts,gameMode,wildcar
 
   // Tournament mode - original team-based queue
   const makeSorted=(players,usedKeys,pgMap,lastMap,mt)=>{
-    const avail=players.filter(p=>!busyIds.has(p.id));
-    const rawSrc=avail.length>=2?getAllPairs(avail):getAllPairs(players);
-    const src=mt?filterPairsByMatchType(rawSrc,players,mt):rawSrc;
+    const avail=players.filter(p=>!busyIds.has(p.id)&&!isAtLimit(p.id));
+    const rawSrc=getAllPairs(avail);
+    const src=mt?filterPairsByMatchType(rawSrc,avail,mt):rawSrc;
     const pool2=src.length>0?src:rawSrc;
     const fresh=pool2.filter(([a,b])=>!usedKeys.has(pairKey(a,b)));
     const pool=fresh.length>0?fresh:pool2;
@@ -866,14 +1032,47 @@ function StandingsTable({teams,gameHistory,wildcards}) {
         <td style={{...td,fontWeight:900,fontSize:14}}>{s.personalPts}</td>
       </tr>))}</tbody></table></div></div>);
 }
-function PlayersTab({teams,dispatch,liveGames,wildcards,levelPairs}) {
-  const [name,setName]=useState("");const [skill,setSkill]=useState("Intermediate");const [gender,setGender]=useState("Male");const [avatar,setAvatar]=useState(0);
+function PlayersTab({teams,dispatch,liveGames,wildcards,levelPairs,gameHistory,playerGameStats,globalGameLimit}) {
+  const [name,setName]=useState("");const [skill,setSkill]=useState("Intermediate");const [gender,setGender]=useState("Male");const [avatar,setAvatar]=useState(0);const [gameLimit,setGameLimit]=useState("");
+  const [exportFormat,setExportFormat]=useState("csv");
+  const [ioNote,setIoNote]=useState("");
   const [editId,setEditId]=useState(null);
   const [showLevelPairs,setShowLevelPairs]=useState(true);
+  const [globalLimit,setGlobalLimit]=useState(globalGameLimit??"");
+  const importInputRef=React.useRef(null);
+  useEffect(()=>{setGlobalLimit(globalGameLimit??"");},[globalGameLimit]);
   const allPlayers=[...teams.flatMap((t,ti)=>t.players.map(p=>({...p,team:t.name,teamIdx:ti,isWC:false}))),...(wildcards||[]).map(p=>({...p,team:"Uncategorized",teamIdx:-1,isWC:true}))];
   const hasLive=liveGames.length>0;
   const busyIds=new Set();liveGames.forEach(g=>{[...g.pair1,...g.pair2].forEach(id=>busyIds.add(id));});
-  const handleAdd=()=>{if(!name.trim())return;dispatch({type:"ADD_PLAYER",name:name.trim(),skill,gender,avatar,wildcard:true});setName("");};
+  const counts=playerGameStats?.counts||{};
+  const handleAdd=()=>{if(!name.trim())return;dispatch({type:"ADD_PLAYER",name:name.trim(),skill,gender,avatar,wildcard:true,gameLimit});setName("");setGameLimit("");};
+  const handleApplyGlobalLimit=()=>{
+    const normalized=normalizeGameLimit(globalLimit);
+    dispatch({type:"SET_GLOBAL_GAME_LIMIT",gameLimit:normalized});
+    setIoNote(normalized===null?`Cleared the global play limit for ${allPlayers.length} players`:`Applied ${normalized} game limit to ${allPlayers.length} players`);
+  };
+  const openImportDialog=()=>importInputRef.current?.click();
+  const handleImportPlayers=async e=>{
+    const file=e.target.files?.[0];
+    e.target.value="";
+    if(!file) return;
+  try{
+      const imported=await parsePlayerImportFile(file);
+      if(imported.length===0){setIoNote(`No valid players found in ${file.name}`);return;}
+      dispatch({type:"BULK_ADD_PLAYERS",players:imported});
+      setIoNote(`Imported ${imported.length} player${imported.length===1?"":"s"} from ${file.name}`);
+    }catch(err){
+      setIoNote(`Import failed: ${err?.message||"Unable to read the file."}`);
+    }
+  };
+  const handleExportTemplate=()=>{
+    try{
+      exportPlayerTemplate(exportFormat);
+      setIoNote(`Exported player template as ${exportFormat.toUpperCase()}`);
+    }catch(err){
+      setIoNote(`Export failed: ${err?.message||"Unable to export template."}`);
+    }
+  };
   const teamCols=teams||[];
   const allRows=(levelPairs||[]).length>0?(levelPairs||[]):[makeLevelPairRow(teams)];
   const getPlayer=(id)=>[...teams.flatMap(t=>t.players),...(wildcards||[])].find(p=>p.id===id);
@@ -885,23 +1084,53 @@ function PlayersTab({teams,dispatch,liveGames,wildcards,levelPairs}) {
       <Card>
         <div style={{fontWeight:700,fontSize:15,marginBottom:12,color:"#ffffff"}}>Add player (Uncategorized)</div>
         {hasLive&&<div style={{background:"rgba(255,170,0,0.06)",border:"1px solid rgba(255,170,0,0.15)",borderRadius:10,padding:"8px 14px",marginBottom:12,fontSize:12,color:"#ffffff",fontWeight:600}}>⚠️ New players go to Uncategorized. Move them manually to teams.</div>}
-        
+        <input ref={importInputRef} type="file" accept=".xlsx,.xls,.csv,.txt,.tsv" onChange={handleImportPlayers} style={{display:"none"}}/>
+        <div style={{display:"flex",gap:8,flexWrap:"wrap",alignItems:"center",marginBottom:12}}>
+          <button onClick={openImportDialog} style={{padding:"8px 14px",borderRadius:10,border:"1px solid rgba(0,210,255,0.25)",background:"rgba(0,210,255,0.08)",color:"#ffffff",fontWeight:700,fontSize:12,cursor:"pointer"}}>Import players</button>
+          <button onClick={handleExportTemplate} style={{padding:"8px 14px",borderRadius:10,border:"1px solid rgba(168,85,247,0.25)",background:"rgba(168,85,247,0.08)",color:"#ffffff",fontWeight:700,fontSize:12,cursor:"pointer"}}>Export template</button>
+          <select value={exportFormat} onChange={e=>setExportFormat(e.target.value)} style={{padding:"8px 10px",borderRadius:10,border:"1px solid rgba(255,255,255,0.12)",fontSize:12,background:"rgba(255,255,255,0.02)",color:"#fff"}}>
+            <option value="csv">CSV</option>
+            <option value="txt">Text</option>
+            <option value="xlsx">Excel</option>
+            <option value="json">JSON</option>
+          </select>
+          <span style={{fontSize:11,color:"rgba(255,255,255,0.45)"}}>Template columns: name, skill, gender, gameLimit, avatar</span>
+        </div>
+        {ioNote&&<div style={{marginBottom:12,padding:"8px 12px",borderRadius:10,border:"1px solid rgba(255,255,255,0.08)",background:"rgba(255,255,255,0.03)",fontSize:12,color:"#ffffff"}}>{ioNote}</div>}
         <div style={{display:"flex",gap:8,flexWrap:"wrap",alignItems:"center"}}>
           <input value={name} onChange={e=>setName(e.target.value)} onKeyDown={e=>e.key==="Enter"&&handleAdd()} placeholder="Player name..." style={{flex:1,minWidth:120,padding:"10px 14px",borderRadius:10,border:"1px solid rgba(255,255,255,0.1)",fontSize:14,background:"rgba(255,255,255,0.02)",outline:"none"}} onFocus={e=>e.target.style.borderColor="rgba(0,210,255,0.5)"} onBlur={e=>e.target.style.borderColor="rgba(255,255,255,0.1)"}/>
           <select value={gender} onChange={e=>setGender(e.target.value)} style={{padding:"10px 12px",borderRadius:10,border:"1px solid rgba(255,255,255,0.1)",fontSize:14,background:"rgba(255,255,255,0.02)"}}>{GENDERS.map(g=><option key={g}>{g}</option>)}</select>
           <select value={skill} onChange={e=>setSkill(e.target.value)} style={{padding:"10px 12px",borderRadius:10,border:"1px solid rgba(255,255,255,0.1)",fontSize:14,background:"rgba(255,255,255,0.02)"}}>{SKILL_LEVELS.map(s=><option key={s}>{s}</option>)}</select>
+          <input type="number" min="1" value={gameLimit} onChange={e=>setGameLimit(e.target.value)} placeholder="Game limit" style={{width:120,padding:"10px 12px",borderRadius:10,border:"1px solid rgba(255,255,255,0.1)",fontSize:14,background:"rgba(255,255,255,0.02)",color:"#fff"}}/>
           <span style={{display:"flex",alignItems:"center",gap:4,fontSize:12,fontWeight:700,color:"#fbbf24",padding:"8px 10px",borderRadius:10,border:"1px solid rgba(255,170,0,0.25)",background:"rgba(255,170,0,0.08)"}}>Uncategorized</span>
           <button onClick={handleAdd} style={{padding:"10px 22px",borderRadius:10,border:"none",background:"rgba(0,210,255,0.12)",color:"#ffffff",fontWeight:700,fontSize:14,cursor:"pointer",border:"1px solid rgba(0,210,255,0.3)",boxShadow:"0 0 15px rgba(0,210,255,0.1)"}}>+ Add</button>
         </div>
       </Card>
       <Card>
-        <div style={{display:"flex",alignItems:"center",gap:8}}>
-          <div style={{fontWeight:700,fontSize:14,color:"#ffffff"}}>Level Pairing View</div>
-          <div style={{flex:1}}/>
-          <span style={{fontSize:11,color:showLevelPairs?"rgba(0,255,140,0.9)":"rgba(255,170,0,0.9)",fontWeight:700}}>{showLevelPairs?"Visible":"Hidden"}</span>
-          <div onClick={()=>setShowLevelPairs(v=>!v)} style={{width:52,height:26,borderRadius:13,background:showLevelPairs?"rgba(0,210,255,0.3)":"rgba(255,170,0,0.25)",border:showLevelPairs?"1px solid rgba(0,210,255,0.5)":"1px solid rgba(255,170,0,0.45)",cursor:"pointer",position:"relative",transition:"all 0.25s"}}>
-            <div style={{width:20,height:20,borderRadius:10,background:"#ffffff",position:"absolute",top:2,left:showLevelPairs?29:3,transition:"left 0.25s",boxShadow:"0 0 8px rgba(0,0,0,0.3)"}}/>
-          </div>
+        <div style={{display:"flex",gap:14,flexWrap:"wrap"}}>
+          <Card style={{flex:"1 1 300px",padding:"16px 18px"}}>
+            <div style={{display:"flex",alignItems:"center",gap:8}}>
+              <div style={{fontWeight:700,fontSize:14,color:"#ffffff"}}>Level Pairing View</div>
+              <div style={{flex:1}}/>
+              <span style={{fontSize:11,color:showLevelPairs?"rgba(0,255,140,0.9)":"rgba(255,170,0,0.9)",fontWeight:700}}>{showLevelPairs?"Visible":"Hidden"}</span>
+              <div onClick={()=>setShowLevelPairs(v=>!v)} style={{width:52,height:26,borderRadius:13,background:showLevelPairs?"rgba(0,210,255,0.3)":"rgba(255,170,0,0.25)",border:showLevelPairs?"1px solid rgba(0,210,255,0.5)":"1px solid rgba(255,170,0,0.45)",cursor:"pointer",position:"relative",transition:"all 0.25s"}}>
+                <div style={{width:20,height:20,borderRadius:10,background:"#ffffff",position:"absolute",top:2,left:showLevelPairs?29:3,transition:"left 0.25s",boxShadow:"0 0 8px rgba(0,0,0,0.3)"}}/>
+              </div>
+            </div>
+          </Card>
+          <Card style={{flex:"1 1 300px",padding:"16px 18px"}}>
+            <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:10}}>
+              <div style={{fontWeight:700,fontSize:14,color:"#ffffff"}}>Global Play Limit</div>
+              <div style={{flex:1}}/>
+              <span style={{fontSize:11,color:"rgba(255,255,255,0.45)",fontWeight:700}}>Applied to all players</span>
+            </div>
+            <div style={{display:"flex",gap:8,flexWrap:"wrap",alignItems:"center"}}>
+              <input type="number" min="1" value={globalLimit} onChange={e=>setGlobalLimit(e.target.value)} onKeyDown={e=>e.key==="Enter"&&handleApplyGlobalLimit()} placeholder="Unlimited" style={{flex:1,minWidth:120,padding:"10px 12px",borderRadius:10,border:"1px solid rgba(255,255,255,0.1)",fontSize:14,background:"rgba(255,255,255,0.02)",color:"#fff"}}/>
+              <button onClick={handleApplyGlobalLimit} style={{padding:"10px 16px",borderRadius:10,border:"1px solid rgba(0,210,255,0.25)",background:"rgba(0,210,255,0.08)",color:"#ffffff",fontWeight:700,fontSize:12,cursor:"pointer"}}>Apply to all</button>
+              <button onClick={()=>{setGlobalLimit("");dispatch({type:"SET_GLOBAL_GAME_LIMIT",gameLimit:""});setIoNote(`Cleared the global play limit for ${allPlayers.length} players`);}} style={{padding:"10px 16px",borderRadius:10,border:"1px solid rgba(255,170,0,0.22)",background:"rgba(255,170,0,0.08)",color:"#ffffff",fontWeight:700,fontSize:12,cursor:"pointer"}}>Clear</button>
+            </div>
+            <div style={{marginTop:8,fontSize:11,color:"rgba(255,255,255,0.45)"}}>Current: {globalGameLimit??"Unlimited"}</div>
+          </Card>
         </div>
       </Card>
       {showLevelPairs&&<>
@@ -939,10 +1168,11 @@ function PlayersTab({teams,dispatch,liveGames,wildcards,levelPairs}) {
                         if(pid) takenIds.add(pid);
                       });
                     });
+                    const visibleOpts=opts.filter(p=>p.id===sel||(!takenIds.has(p.id)&&!isPlayerAtLimit(p,counts)));
                     return <td key={t.id} style={{padding:"8px"}}>
                       <select value={sel} onChange={e=>dispatch({type:"SET_LEVEL_PAIR_PLAYER",rowId:col.id,teamId:t.id,playerId:e.target.value})} style={{width:"100%",padding:"6px 8px",borderRadius:8,border:"1px solid rgba(255,255,255,0.12)",fontSize:12,background:"rgba(255,255,255,0.02)",color:"#fff"}}>
                         <option value="">----</option>
-                        {opts.filter(p=>p.id===sel||!takenIds.has(p.id)).sort(byName).map(p=><option key={p.id} value={p.id}>{p.name} ({p.skill})</option>)}
+                        {visibleOpts.sort(byName).map(p=><option key={p.id} value={p.id}>{p.name} ({p.skill}){isPlayerAtLimit(p,counts)?" · limit reached":""}</option>)}
                       </select>
                     </td>;
                   })}
@@ -973,6 +1203,9 @@ function PlayersTab({teams,dispatch,liveGames,wildcards,levelPairs}) {
         <div style={{display:"flex",flexDirection:"column",gap:4}}>
           {ungroupedPlayers.sort(byName).map((p,i)=>{
             const isPlaying=busyIds.has(p.id),isEditing=editId===p.id;
+            const played=counts[p.id]||0;
+            const limit=normalizeGameLimit(p.gameLimit);
+            const atLimit=isPlayerAtLimit(p,counts);
             
             return (
               <div key={p.id} style={{padding:"8px 12px",borderRadius:10,background:isEditing?"rgba(0,210,255,0.1)":"rgba(255,255,255,0.03)",border:isEditing?"1px solid rgba(0,210,255,0.3)":"1px solid rgba(255,255,255,0.04)",animation:`wcFloat${i%3} 3.5s ease-in-out infinite`,animationDelay:`${i*0.15}s`}}>
@@ -980,7 +1213,7 @@ function PlayersTab({teams,dispatch,liveGames,wildcards,levelPairs}) {
                   <Av player={p} size={32} border={false}/>
                   <div style={{flex:1,minWidth:0}}>
                     <div style={{fontSize:14,fontWeight:600,color:"#ffffff"}}>{p.name}</div>
-                    <div style={{fontSize:11,color:"rgba(255,255,255,0.55)"}}>{p.skill}{isPlaying&&<span style={{color:"#fbbf24",fontWeight:700,marginLeft:6}}>PLAYING</span>}</div>
+                    <div style={{fontSize:11,color:"rgba(255,255,255,0.55)"}}>{p.skill} · Games {played}/{limit===null?"Unlimited":limit}{isPlaying&&<span style={{color:"#fbbf24",fontWeight:700,marginLeft:6}}>PLAYING</span>}{atLimit&&<span style={{color:"#f87171",fontWeight:700,marginLeft:6}}>LIMIT REACHED</span>}</div>
                   </div>
                   <button onClick={()=>setEditId(isEditing?null:p.id)} style={{padding:"4px 10px",borderRadius:6,border:"1px solid rgba(0,210,255,0.15)",background:"rgba(8,8,20,0.95)",color:"rgba(255,255,255,0.45)",fontSize:11,fontWeight:600,cursor:"pointer"}}>{isEditing?"Done":"Edit"}</button>
                   <button onClick={()=>dispatch({type:"REMOVE_PLAYER",id:p.id})} disabled={isPlaying} style={{padding:"4px 10px",borderRadius:6,border:"1px solid rgba(255,60,60,0.25)",background:isPlaying?"rgba(255,255,255,0.02)":"rgba(255,60,60,0.08)",color:isPlaying?"rgba(255,255,255,0.15)":"#ff5555",fontWeight:600,fontSize:11,cursor:isPlaying?"default":"pointer"}}>✕</button>
@@ -991,7 +1224,9 @@ function PlayersTab({teams,dispatch,liveGames,wildcards,levelPairs}) {
                     <div style={{display:"flex",gap:8}}>
                       <div><div style={{fontSize:12,fontWeight:600,color:"rgba(255,255,255,0.45)",marginBottom:4}}>Gender</div><select value={p.gender||"Male"} onChange={e=>dispatch({type:"UPDATE_PLAYER",id:p.id,updates:{gender:e.target.value}})} style={{padding:"6px 10px",borderRadius:8,border:"1px solid rgba(255,255,255,0.1)",fontSize:12,background:"rgba(255,255,255,0.02)"}}>{GENDERS.map(g=><option key={g}>{g}</option>)}</select></div>
                       <div><div style={{fontSize:12,fontWeight:600,color:"rgba(255,255,255,0.45)",marginBottom:4}}>Skill</div><select value={p.skill} onChange={e=>dispatch({type:"UPDATE_PLAYER",id:p.id,updates:{skill:e.target.value}})} style={{padding:"6px 10px",borderRadius:8,border:"1px solid rgba(255,255,255,0.1)",fontSize:12,background:"rgba(255,255,255,0.02)"}}>{SKILL_LEVELS.map(s=><option key={s}>{s}</option>)}</select></div>
+                      <div><div style={{fontSize:12,fontWeight:600,color:"rgba(255,255,255,0.45)",marginBottom:4}}>Game Limit</div><input type="number" min="1" value={p.gameLimit??""} onChange={e=>dispatch({type:"UPDATE_PLAYER",id:p.id,updates:{gameLimit:e.target.value}})} placeholder="Unlimited" style={{width:120,padding:"6px 10px",borderRadius:8,border:"1px solid rgba(255,255,255,0.1)",fontSize:12,background:"rgba(255,255,255,0.02)",color:"#fff"}}/></div>
                     </div>
+                    <div style={{fontSize:11,color:"rgba(255,255,255,0.5)"}}>Games played: {played} · Remaining: {limit===null?"Unlimited":Math.max(0,limit-played)}</div>
                   </div>)}
               </div>);})}
         </div>
@@ -1076,7 +1311,7 @@ function TeamsTab({teams,wildcards,dispatch,gameHistory}) {
   );
 }
 
-function ScheduleTab({teams,wildcards,manualQueue,dispatch,courts,liveGames}) {
+function ScheduleTab({teams,wildcards,manualQueue,dispatch,courts,liveGames,playerGameStats}) {
   const allP=[...teams.flatMap(t=>t.players),...(wildcards||[])];
   const [p1a,setP1a]=useState("");const [p1b,setP1b]=useState("");
   const [p2a,setP2a]=useState("");const [p2b,setP2b]=useState("");
@@ -1084,10 +1319,13 @@ function ScheduleTab({teams,wildcards,manualQueue,dispatch,courts,liveGames}) {
   const busyIds=new Set();liveGames.forEach(g=>{[...g.pair1,...g.pair2].forEach(id=>busyIds.add(id));});
   const openCourt=courts?.find(c=>c.status==="open");
   const getP=id=>allP.find(p=>p.id===id);
+  const gameCounts=playerGameStats?.counts||{};
   const sel=[p1a,p1b,p2a,p2b].filter(Boolean);
-  const handleAdd=()=>{if(p1a&&p1b&&p2a&&p2b){dispatch({type:"ADD_MANUAL_MATCH",pair1:[p1a,p1b],pair2:[p2a,p2b],matchType:mt});setP1a("");setP1b("");setP2a("");setP2b("");}};
+  const selectedPlayers=[p1a,p1b,p2a,p2b].map(getP).filter(Boolean);
+  const hasLimitSelected=selectedPlayers.some(p=>isPlayerAtLimit(p,gameCounts));
+  const handleAdd=()=>{if(p1a&&p1b&&p2a&&p2b&&!hasLimitSelected){dispatch({type:"ADD_MANUAL_MATCH",pair1:[p1a,p1b],pair2:[p2a,p2b],matchType:mt});setP1a("");setP1b("");setP2a("");setP2b("");}};
   const MTB=({m:mm})=>{const active=mt===mm;const c=mm==="Mens Doubles"?"60,130,255":mm==="Womens Doubles"?"236,72,153":"168,85,247";return <button onClick={()=>setMt(mm)} style={{padding:"4px 10px",borderRadius:99,border:active?"1px solid rgba("+c+",0.5)":"1px solid rgba(255,255,255,0.06)",background:active?"rgba("+c+",0.15)":"transparent",color:"#ffffff",fontSize:10,fontWeight:700,cursor:"pointer"}}>{mm==="Mens Doubles"?"MDD":mm==="Womens Doubles"?"WDD":"MXD"}</button>;};
-  const Sel=({val,set,label})=><select value={val} onChange={e=>set(e.target.value)} style={{padding:"6px 8px",borderRadius:8,border:"1px solid rgba(0,210,255,0.2)",fontSize:12,background:"rgba(8,8,20,0.95)",color:"#fff",flex:1,minWidth:80}}><option value="">{label}</option>{allP.filter(p=>!sel.includes(p.id)||p.id===val).sort(byName).map(p=><option key={p.id} value={p.id}>{p.name} ({p.gender==="Male"?"M":"F"})</option>)}</select>;
+  const Sel=({val,set,label})=><select value={val} onChange={e=>set(e.target.value)} style={{padding:"6px 8px",borderRadius:8,border:"1px solid rgba(0,210,255,0.2)",fontSize:12,background:"rgba(8,8,20,0.95)",color:"#fff",flex:1,minWidth:80}}><option value="">{label}</option>{allP.filter(p=>p.id===val||(!sel.includes(p.id)&&!isPlayerAtLimit(p,gameCounts))).sort(byName).map(p=><option key={p.id} value={p.id}>{p.name} ({p.gender==="Male"?"M":"F"})</option>)}</select>;
   return (
     <div style={{display:"flex",flexDirection:"column",gap:12}}>
       <Card>
@@ -1098,19 +1336,22 @@ function ScheduleTab({teams,wildcards,manualQueue,dispatch,courts,liveGames}) {
           <span style={{fontSize:12,fontWeight:900,color:"rgba(255,255,255,0.3)"}}>VS</span>
           <Sel val={p2a} set={setP2a} label="Pair 2 #1"/><Sel val={p2b} set={setP2b} label="Pair 2 #2"/>
         </div>
-        <button onClick={handleAdd} disabled={!p1a||!p1b||!p2a||!p2b} style={{width:"100%",padding:"10px 0",borderRadius:10,border:"1px solid rgba(0,210,255,0.3)",background:p1a&&p1b&&p2a&&p2b?"rgba(0,210,255,0.12)":"rgba(255,255,255,0.03)",color:"#ffffff",fontWeight:700,fontSize:13,cursor:p1a&&p1b&&p2a&&p2b?"pointer":"default",opacity:p1a&&p1b&&p2a&&p2b?1:0.4}}>+ Add to Schedule</button>
+        <button onClick={handleAdd} disabled={!p1a||!p1b||!p2a||!p2b||hasLimitSelected} style={{width:"100%",padding:"10px 0",borderRadius:10,border:"1px solid rgba(0,210,255,0.3)",background:p1a&&p1b&&p2a&&p2b&&!hasLimitSelected?"rgba(0,210,255,0.12)":"rgba(255,255,255,0.03)",color:"#ffffff",fontWeight:700,fontSize:13,cursor:p1a&&p1b&&p2a&&p2b&&!hasLimitSelected?"pointer":"default",opacity:p1a&&p1b&&p2a&&p2b&&!hasLimitSelected?1:0.4}}>+ Add to Schedule</button>
+        {hasLimitSelected&&<div style={{marginTop:8,fontSize:11,color:"#f87171",fontWeight:700}}>One or more selected players reached their game limit.</div>}
       </Card>
       <div style={{fontWeight:700,fontSize:14,color:"#ffffff"}}>Scheduled Matches ({(manualQueue||[]).length})</div>
       {(manualQueue||[]).length===0&&<div style={{textAlign:"center",padding:20,color:"rgba(255,255,255,0.4)",fontSize:12,border:"1px dashed rgba(0,210,255,0.15)",borderRadius:12}}>No matches scheduled yet.</div>}
       {(manualQueue||[]).map((match,idx)=>{
         const pa1=getP(match.pair1[0]),pa2=getP(match.pair1[1]),pb1=getP(match.pair2[0]),pb2=getP(match.pair2[1]);
         const anyBusy=match.pair1.concat(match.pair2).some(id=>busyIds.has(id));
+        const anyLimit=match.pair1.concat(match.pair2).some(id=>isPlayerAtLimit(getP(id),gameCounts));
+        const canStart=openCourt&&!anyBusy&&!anyLimit;
         return (
           <div key={match.id} style={{borderRadius:12,overflow:"hidden",border:"1px solid rgba(0,210,255,0.1)",background:"rgba(12,12,30,0.88)",animation:"wcFloat"+(idx%3)+" 3.5s ease-in-out infinite",animationDelay:idx*0.2+"s"}}>
             <div style={{display:"flex",alignItems:"center",gap:6,padding:"5px 12px",background:"rgba(20,20,45,0.95)",borderBottom:"1px solid rgba(255,255,255,0.04)"}}>
               <span style={{fontSize:11,fontWeight:800,color:"#ffffff"}}>MATCH {idx+1}</span>
               <MatchTypeBadge type={match.matchType}/>
-              {openCourt&&!anyBusy&&<button onClick={()=>dispatch({type:"START_MANUAL_MATCH",matchId:match.id,courtId:openCourt.id})} style={{padding:"2px 8px",borderRadius:6,border:"1px solid rgba(0,255,140,0.3)",background:"rgba(0,255,140,0.12)",color:"#ffffff",fontSize:9,fontWeight:700,cursor:"pointer"}}>{openCourt.name}</button>}
+              {canStart&&<button onClick={()=>dispatch({type:"START_MANUAL_MATCH",matchId:match.id,courtId:openCourt.id})} style={{padding:"2px 8px",borderRadius:6,border:"1px solid rgba(0,255,140,0.3)",background:"rgba(0,255,140,0.12)",color:"#ffffff",fontSize:9,fontWeight:700,cursor:"pointer"}}>{openCourt.name}</button>}
               <div style={{flex:1}}/>
               <button onClick={()=>dispatch({type:"MOVE_MANUAL_MATCH",id:match.id,dir:"up"})} disabled={idx===0} style={{padding:"2px 6px",borderRadius:4,border:"1px solid rgba(255,255,255,0.1)",background:"rgba(255,255,255,0.03)",color:idx===0?"rgba(255,255,255,0.2)":"#fff",fontSize:10,cursor:"pointer"}}>{"\u2191"}</button>
               <button onClick={()=>dispatch({type:"MOVE_MANUAL_MATCH",id:match.id,dir:"down"})} disabled={idx===(manualQueue||[]).length-1} style={{padding:"2px 6px",borderRadius:4,border:"1px solid rgba(255,255,255,0.1)",background:"rgba(255,255,255,0.03)",color:idx===(manualQueue||[]).length-1?"rgba(255,255,255,0.2)":"#fff",fontSize:10,cursor:"pointer"}}>{"\u2193"}</button>
@@ -1129,6 +1370,7 @@ function ScheduleTab({teams,wildcards,manualQueue,dispatch,courts,liveGames}) {
               </div>
             </div>
             {anyBusy&&<div style={{padding:"4px 12px",background:"rgba(255,170,0,0.08)",fontSize:10,color:"rgba(255,255,255,0.5)"}}>Some players currently playing</div>}
+            {anyLimit&&<div style={{padding:"4px 12px",background:"rgba(248,113,113,0.08)",fontSize:10,color:"#f87171",fontWeight:700}}>One or more players reached the game limit.</div>}
           </div>);
       })}
     </div>);
@@ -1281,6 +1523,8 @@ function BadmintonApp() {
   const [tab,setTab]=useState("match");
   const [feeSettings,setFeeSettings]=useState({courtFeePerCourt:0,courtCount:(init.courts||[]).length||1,shuttleTubes:0,shuttleCostPerTube:0,currency:"QAR"});
   const t1=st.teams[0],t2=st.teams[1];
+  const allPlayers=[...st.teams.flatMap(t=>t.players),...(st.wildcards||[])];
+  const playerGameStats=buildPlayerGameCounts(allPlayers,st.gameHistory,st.liveGames);
   const mg=st.gameHistory.filter(g=>(g.team1Id===t1?.id&&g.team2Id===t2?.id)||(g.team1Id===t2?.id&&g.team2Id===t1?.id));
   const t1W=mg.filter(g=>(g.team1Id===t1?.id&&g.winner===1)||(g.team2Id===t1?.id&&g.winner===2)).length;
   const t2W=mg.filter(g=>(g.team1Id===t2?.id&&g.winner===1)||(g.team2Id===t2?.id&&g.winner===2)).length;
@@ -1343,12 +1587,12 @@ function BadmintonApp() {
               </div>);})}
         </div>)}
 
-      {tab==="queue"&&<Card style={{padding:"16px 12px"}}><div style={{fontWeight:700,fontSize:15,marginBottom:12,color:"#ffffff"}}>Pair Queue</div><PairQueue teams={st.teams} gameHistory={st.gameHistory} liveGames={st.liveGames} dispatch={dispatch} courts={st.courts} gameMode={st.gameMode} wildcards={st.wildcards}/></Card>}
-      {tab==="players"&&<PlayersTab teams={st.teams} dispatch={dispatch} liveGames={st.liveGames} wildcards={st.wildcards} levelPairs={st.levelPairs}/>}
+      {tab==="queue"&&<Card style={{padding:"16px 12px"}}><div style={{fontWeight:700,fontSize:15,marginBottom:12,color:"#ffffff"}}>Pair Queue</div><PairQueue teams={st.teams} gameHistory={st.gameHistory} liveGames={st.liveGames} dispatch={dispatch} courts={st.courts} gameMode={st.gameMode} wildcards={st.wildcards} playerGameStats={playerGameStats} queueRowTypes={st.queueRowTypes}/></Card>}
+      {tab==="players"&&<PlayersTab teams={st.teams} dispatch={dispatch} liveGames={st.liveGames} wildcards={st.wildcards} levelPairs={st.levelPairs} gameHistory={st.gameHistory} playerGameStats={playerGameStats} globalGameLimit={st.globalGameLimit}/>}
       {tab==="teams"&&(
         <TeamsTab teams={st.teams} wildcards={st.wildcards} dispatch={dispatch} gameHistory={st.gameHistory}/>
       )}
-      {tab==="schedule"&&<ScheduleTab teams={st.teams} wildcards={st.wildcards} manualQueue={st.manualQueue} dispatch={dispatch} courts={st.courts} liveGames={st.liveGames}/>}
+      {tab==="schedule"&&<ScheduleTab teams={st.teams} wildcards={st.wildcards} manualQueue={st.manualQueue} dispatch={dispatch} courts={st.courts} liveGames={st.liveGames} playerGameStats={playerGameStats}/>}
       {tab==="history"&&<HistoryTab teams={st.teams} wildcards={st.wildcards} manualQueue={st.manualQueue} liveGames={st.liveGames} gameHistory={st.gameHistory}/>}
       {tab==="payment"&&<PaymentTab teams={st.teams} wildcards={st.wildcards} paymentStatus={st.paymentStatus} paymentMethod={st.paymentMethod} dispatch={dispatch} feeSettings={feeSettings}/>}
       {tab==="admin"&&<AdminTab teams={st.teams} wildcards={st.wildcards} courts={st.courts} liveGames={st.liveGames} manualQueue={st.manualQueue} gameHistory={st.gameHistory} dispatch={dispatch} feeSettings={feeSettings} setFeeSettings={setFeeSettings}/>}
